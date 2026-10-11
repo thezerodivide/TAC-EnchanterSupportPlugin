@@ -13,7 +13,7 @@
     local function newWorld()
         W = { now = 1000, serial = 1, maId = 500, fed = nil, assist = nil, bn = 'default',
             mobs = {}, xt = {}, ignored = {}, unreachable = {}, locked = {}, outOfRange = {},
-            xtCalls = 0, registered = nil, unregistered = nil, ctrl = { ma_id = 500, ma_name = 'Tank' } }
+            xtCalls = 0, logs = {}, registered = nil, unregistered = nil, ctrl = { ma_id = 500, ma_name = 'Tank' } }
         printed = {}
         local mq = { TLO = {
             Me = {
@@ -60,6 +60,7 @@
             registerTargetSelector = function(spec) W.registered = spec; return true end,
             unregisterTargetSelector = function(label, owner) W.unregistered = { label = label, owner = owner }; return true end,
             saveLoadout = function() end,
+            log = { debug = function(cat, fmt, ...) W.logs[#W.logs + 1] = cat .. ': ' .. string.format(fmt, ...) end },
         }
         return W
     end
@@ -255,6 +256,50 @@
     assert_nil(W.rt.npcSpellApplied[2]['Dazzle'], 'fail: onCombatTick clears the record of a failed mez')
     plugin.onDestroy(); plugin.onCombatTick()
     assert_true(true, 'fail: onCombatTick after onDestroy is harmless')
+
+    -- debug trace ---------------------------------------------------------------------------------------------------------------------------
+    newWorld(); plugin = loadPlugin(); plugin.onInit(W.core)
+    addMob(1); addMob(2, { dist = 30 }); addMob(3, { hp = 50 })
+    W.fed = { id = 1 }
+    W.bn = { peersInZone = function() return { { name = 'Cleric', hb = { target = { id = 3, engaged = true } } } } end }
+    W.registered.resolve(ctx())
+    assert_eq(#W.logs, 2, 'trace: the first pick logs the input and the pick')
+    assert_true(W.logs[1]:find('MA target #1 (Box Network feed); peers: Cleric>#3 engaged', 1, true), 'trace: the input names the MA target, its source and the peers')
+    assert_true(W.logs[2]:find('pick #2 "mob2" dist 30', 1, true), 'trace: the pick names the mob and distance')
+    assert_true(W.logs[2]:find('1 Main Assist target', 1, true) and W.logs[2]:find('1 fought by another box', 1, true), 'trace: ...and what was skipped')
+    W.rt.tickSerial = 2
+    W.registered.resolve(ctx())
+    assert_eq(#W.logs, 2, 'trace: an unchanged input and pick log nothing')
+    W.fed = nil; W.assist = 1
+    W.rt.tickSerial = 3
+    W.registered.resolve(ctx())
+    assert_true(W.logs[#W.logs] and W.logs[#W.logs]:find('(/assist peek)', 1, true), 'trace: the /assist peek source is logged')
+    W.fed = false
+    W.rt.tickSerial = 4
+    W.registered.resolve(ctx())
+    assert_true(W.logs[#W.logs - 1]:find('MA no target', 1, true), 'trace: a no-target Main Assist is logged')
+    assert_true(W.logs[#W.logs]:find('Waiting: Main Assist has no target', 1, true), 'trace: ...with the status as the pick')
+    W.core.log = nil
+    W.rt.tickSerial = 5; W.fed = { id = 1 }
+    assert_eq(W.registered.resolve(ctx()), 2, 'trace: a core without a logger still selects')
+    W.core.log = { debug = function() error('boom') end }
+    W.rt.tickSerial = 6; W.fed = { id = 3 }
+    assert_true(W.registered.resolve(ctx()) ~= nil, 'trace: a logger that raises does not stop the selector')
+    -- mez casts and failures
+    newWorld(); plugin = loadPlugin(); plugin.onInit(W.core)
+    W.rt.npcSpellLastCast[7] = { ['Dazzle'] = 990, ['Fireball'] = 991 }
+    plugin.onCombatTick()
+    assert_eq(#W.logs, 1, 'trace: a recorded mez cast is logged (not a non-mez spell)')
+    assert_true(W.logs[1]:find('mez cast recorded: Dazzle on #7', 1, true), 'trace: ...with the spell and mob')
+    plugin.onCombatTick()
+    assert_eq(#W.logs, 1, 'trace: the same cast is logged once')
+    W.rt.npcSpellLastCast[7]['Dazzle'] = 1000; W.rt.npcSpellApplied[7] = { ['Dazzle'] = 1060 }
+    W.core.castTracker.failed = true; W.core.castTracker.lastSpell = 'Dazzle'; W.core.castTracker.lastTime = 1000
+    plugin.onCombatTick()
+    assert_eq(#W.logs, 3, 'trace: a new cast and its failure are logged')
+    assert_true(W.logs[3]:find('failed mez cast: cleared the record for #7', 1, true), 'trace: a cleared record is logged')
+    assert_eq(#L.newMezCasts({ [1] = { Dazzle = 5 } }, {}), 1, 'trace: newMezCasts reports a cast')
+    assert_eq(L.describeInput({ ma = { configured = false }, peers = {} }), 'MA not set; peers: none', 'trace: describeInput with no Main Assist')
 
     -- chat reporting ------------------------------------------------------------------------------------------------------------------------
     newWorld(); plugin = loadPlugin(); plugin.onInit(W.core)

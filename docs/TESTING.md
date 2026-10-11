@@ -6,12 +6,12 @@
 luajit tests/run.lua
 ```
 
-- 282 checks without TAC; 296 with `TAC_SOURCE` pointing at a TAC `triune.lua` that has the registry (the extra 14 run this plugin against TAC's real registry code: register, resolve, disable, fail-closed, re-enable).
+- 299 checks without TAC; 313 with `TAC_SOURCE` pointing at a TAC `triune.lua` that has the registry (the extra 14 run this plugin against TAC's real registry code: register, resolve, disable, fail-closed, re-enable).
 - `tests/test_decision.lua`: the pure `decide()` function, the spell data, status text and the chat rate limit. Includes combinations (Main Assist target + a damaged add + an already-mezzed add, peers fighting the nearest add, every filter at once)
   and a purity check (`decide` does not change its input).
 - `tests/test_collection.lua`: the state collection against a fake game world (Main Assist outcomes, peers, the per-mob filters, settings, per-tick caching), the mez tracking, failed-cast handling, chat reporting, resilience (core reads that throw,
   a TAC without the registry, a refused registration) and the plugin's lifecycle.
-- `python tools/mutation_check.py` breaks 18 rules one at a time in a scratch copy and runs the suite; every one must fail. If you add a rule, add its test **and** a mutation.
+- `python tools/mutation_check.py` breaks 24 rules one at a time in a scratch copy and runs the suite; every one must fail. If you add a rule, add its test **and** a mutation.
 - `python tools/verify_spell_data.py` checks the `SPELLS` table against the game's `spells_us.txt` (class level, target type, level cap, cast time).
 
 CI (`.github/workflows/ci.yml`) runs the syntax check and `tests/run.lua` on Linux.
@@ -23,7 +23,7 @@ The plugin has **not** been run in game. To test:
 1. Use a TAC with the registry. The owner's working copy of TAC already has it; a clean TAC needs `patches/tac-target-selector-registry.patch` (`git am` or `git apply`).
    MacroQuest's installed TAC is a **plain copy**: copy `triune.lua` to `<MacroQuest>/lua/` and `mez.lua` to `<MacroQuest>/lua/tac/` (keep backups; the installed `triune.lua` predates the registry).
 2. In TAC enable **Mez Support** (Plugins tab; click Rescan if TAC was running). Set a **Main Assist**. Put the Enchanter in **Assist mode**.
-3. On the mez gem: **Target** `E: Mez Target`, **When** `in combat`. Turn on **Debug Mode** and Log To File.
+3. On the mez gem: **Target** `E: Mez Target`, **When** `in combat`. Turn on **Debug Mode** and Log To File. The plugin then writes `mez:` lines to the TAC log: the Main Assist input and source, the peers, each change of pick with the skipped counts, each recorded mez cast, each cleared failed cast.
 4. Pull a group of 2-4 mobs with the tank; ideally a case where the tank runs TAC (Box Network) and one where the tank is piloted.
 
 What to look for:

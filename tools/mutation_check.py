@@ -37,7 +37,14 @@ MUTATIONS = [
     ('an unknown Main Assist is treated as a target', "if id and id > 0 then ma.status, ma.id = 'target', id end", "ma.status, ma.id = 'target', (id or 999)"),
     ('the damaged setting is ignored', "settings = { damagedProtection = cfg.damagedProtection },", "settings = { damagedProtection = false },"),
     ('the selector is never unregistered', "pcall(core.unregisterTargetSelector, SELECTOR_LABEL, plugin.id)", "local _ = 0"),
-    ('a fresh no-target heartbeat is treated as unknown', "    elseif fed == false then\n        ma.status = 'none'", "    elseif fed == false then\n        ma.status = 'unknown'"),
+    ('a fresh no-target heartbeat is treated as unknown', "        ma.source = 'boxnet'\n        ma.status = 'none'\n    else", "        ma.source = 'boxnet'\n        ma.status = 'unknown'\n    else"),
+    # debug trace
+    ('the trace repeats an unchanged input', "if input ~= traced.input then", "if true then"),
+    ('the trace repeats an unchanged pick', "if pick ~= traced.pick then", "if true then"),
+    ('the trace names the wrong Main Assist source', "(ma.source == 'boxnet' and 'Box Network feed' or '/assist peek')", "'Box Network feed'"),
+    ('non-mez casts are traced as mez casts', "if at and spellInfo(spell) then", "if at then"),
+    ('a cast is traced every tick', "if seen[key] ~= at then", "if true then"),
+    ('a cleared record is not traced', "if cleared then trace(", "if false then trace("),
     ('lockouts are not read', "lockedOut = lockedOut,", "lockedOut = false,"),
     ('range is not read', "inRange   = tlo(function() return rt.isTargetInRange(spellName, id) end, false) == true,", "inRange   = true,"),
 ]

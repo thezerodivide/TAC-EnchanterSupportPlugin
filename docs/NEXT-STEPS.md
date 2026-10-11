@@ -9,13 +9,12 @@
 
 ## Do next, in this order
 
-1. **Add useful debug logging for the first in-game test.** Today the plugin writes only *problem* statuses to chat; a candidate pick is shown in the window only, so a fight log would not show what was chosen or skipped.
-   Proposed (agreed in principle, not built): through `core.log` (debug lines only while Debug Mode is on), rate-limited, log
+1. **Debug logging for the first in-game test: built, unit-tested, not yet seen in game.** Through `core.log.debug` (category `mez`), written only when something changes:
    (a) the Main Assist input (`target <id>` / `none` / `unknown`, and whether it came from the Box Network feed or the `/assist` peek),
    (b) the peers considered (name, target id, engaged),
    (c) on a change of pick: the chosen mob (id, name, distance) and the `excluded` counts,
    (d) each time a mez cast is recorded or a failed cast clears a record.
-   Keep it out of `decide()`: build the text from the returned `excluded` counts and the collected state.
+   The text is built outside `decide()` (`describeInput`, `describeResult`, `newMezCasts`). Caveat: (d) notices a cast by polling TAC's `npcSpellLastCast` each combat tick, so it is logged up to a tick late and only if the plugin is enabled.
 2. **Test in game** (`docs/TESTING.md` section 2) and fix what the log shows.
 3. **Decide whether to offer a standalone mode** (see below).
 4. Write CHANGELOG/README for the TAC-side PR and choose a license.

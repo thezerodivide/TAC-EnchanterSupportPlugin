@@ -330,6 +330,72 @@ local function clearFailedMez(tracker, appliedByMob, lastCastByMob, seen)
 end
 
 -- ----------------------------------------------------------------------------
+-- Debug trace text (pure: built from the collected state and the decision)
+-- ----------------------------------------------------------------------------
+-- What the decision was given: the Main Assist input and the peers considered.
+local function describeInput(state)
+    local ma = state and state.ma or {}
+    local maText
+    if not ma.configured then
+        maText = 'MA not set'
+    elseif ma.status == 'target' then
+        maText = 'MA target #' .. tostring(ma.id)
+    elseif ma.status == 'none' then
+        maText = 'MA no target'
+    else
+        maText = 'MA unknown'
+    end
+    if ma.configured and ma.source then
+        maText = maText .. ' (' .. (ma.source == 'boxnet' and 'Box Network feed' or '/assist peek') .. ')'
+    end
+    local peers = {}
+    for _, p in ipairs(state and state.peers or {}) do
+        peers[#peers + 1] = string.format('%s>#%s%s', tostring(p.name or '?'), tostring(p.id or 0), p.engaged and ' engaged' or '')
+    end
+    return string.format('%s; peers: %s', maText, #peers > 0 and table.concat(peers, ', ') or 'none')
+end
+
+-- What the decision chose, and what it skipped and why.
+local function describeResult(result, state)
+    local text = statusText(result)
+    if result and result.status == STATUS.CANDIDATE then
+        local dist
+        for _, m in ipairs(state and state.mobs or {}) do
+            if m.id == result.id then dist = m.dist end
+        end
+        text = string.format('pick #%s "%s"%s', tostring(result.id), tostring(result.name or '?'),
+            dist and string.format(' dist %.0f', dist) or '')
+        local parts = {}
+        for _, e in ipairs(EXCLUDE_LABELS) do
+            local n = result.excluded and result.excluded[e[1]]
+            if n and n > 0 then parts[#parts + 1] = string.format('%d %s', n, e[2]) end
+        end
+        if #parts > 0 then text = text .. ' (skipped: ' .. table.concat(parts, ', ') .. ')' end
+    end
+    return text
+end
+
+-- Mez casts TAC has recorded since the last look. `seen` maps "mob:spell" to the
+-- cast time already reported; returns a list of { mobId, spell, at }.
+local function newMezCasts(lastCastByMob, seen)
+    local out = {}
+    for mobId, casts in pairs(lastCastByMob or {}) do
+        for spell, at in pairs(casts or {}) do
+            at = tonumber(at)
+            if at and spellInfo(spell) then
+                local key = tostring(mobId) .. ':' .. spell
+                if seen[key] ~= at then
+                    seen[key] = at
+                    out[#out + 1] = { mobId = mobId, spell = spell, at = at }
+                end
+            end
+        end
+    end
+    table.sort(out, function(a, b) return a.at < b.at end)
+    return out
+end
+
+-- ----------------------------------------------------------------------------
 -- State collection (reads the game through the core API)
 -- ----------------------------------------------------------------------------
 local function tlo(fn, default)
@@ -370,15 +436,18 @@ local function collectMainAssist(rt, ctrl, mq)
         return good
     end
     if type(fed) == 'table' then
+        ma.source = 'boxnet'
         if validHostile(tonumber(fed.id) or 0) then
             ma.status, ma.id = 'target', tonumber(fed.id)
         else
             ma.status = 'none'           -- the MA is targeting something that is not an enemy
         end
     elseif fed == false then
+        ma.source = 'boxnet'
         ma.status = 'none'
     else
         -- no Box Network feed (the MA is not running Triune): TAC's /assist peek
+        ma.source = 'assist'
         local id = tlo(function() return rt.maTargetId() end, nil)
         if id and id > 0 then ma.status, ma.id = 'target', id end
     end
@@ -397,7 +466,8 @@ local function collectPeers(rt)
         local hb = type(p.hb) == 'table' and p.hb or {}
         local t = hb.target
         local isT = type(t) == 'table'
-        peers[#peers + 1] = { fresh = true, id = isT and tonumber(t.id) or 0, engaged = isT and t.engaged == true }
+        peers[#peers + 1] = { fresh = true, id = isT and tonumber(t.id) or 0, engaged = isT and t.engaged == true,
+            name = p.name }
     end
     return peers
 end
@@ -463,6 +533,30 @@ local last = { result = nil, text = '', spell = nil, at = 0 }
 local announced = nil
 local failureSeen = { at = nil, spell = nil }
 local cache = { serial = nil, spell = nil, result = nil }
+local traced = { input = nil, pick = nil }
+local castsSeen = {}
+
+-- Debug trace through TAC's logger (lines only appear while Debug Mode is on).
+-- It never raises: a logging problem must not stop the selector.
+local function trace(fmt, ...)
+    local lg = core and core.log
+    if type(lg) ~= 'table' or type(lg.debug) ~= 'function' then return end
+    pcall(lg.debug, 'mez', fmt, ...)
+end
+
+-- Log the input and the pick, but only when they change (the selector runs every tick).
+local function traceDecision(state, result)
+    local input = describeInput(state)
+    if input ~= traced.input then
+        traced.input = input
+        trace('input: %s', input)
+    end
+    local pick = describeResult(result, state)
+    if pick ~= traced.pick then
+        traced.pick = pick
+        trace('%s: %s', tostring(state.spell), pick)
+    end
+end
 
 local function remember(result, spellName, now)
     last.result, last.spell, last.at = result, spellName, now
@@ -485,7 +579,9 @@ local function resolve(ctx)
         return cache.result.id
     end
     local now = os.clock()
-    local result = decide(collectState(core, spellName, ctx and ctx.entry, now))
+    local state = collectState(core, spellName, ctx and ctx.entry, now)
+    local result = decide(state)
+    traceDecision(state, result)
     remember(result, spellName, now)
     cache = { serial = serial, spell = spellName, result = result }
     return result.id
@@ -515,13 +611,19 @@ function plugin.onDestroy()
     core = nil
     announced = nil
     cache = { serial = nil, spell = nil, result = nil }
+    traced = { input = nil, pick = nil }
+    castsSeen = {}
 end
 
 -- Each combat tick: notice a failed mez cast and drop the record of the mob it was aimed at.
 function plugin.onCombatTick()
     if not core then return end
     local rt = core.runtime
-    clearFailedMez(core.castTracker, rt and rt.npcSpellApplied, rt and rt.npcSpellLastCast, failureSeen)
+    for _, c in ipairs(newMezCasts(rt and rt.npcSpellLastCast, castsSeen)) do
+        trace('mez cast recorded: %s on #%s', c.spell, tostring(c.mobId))
+    end
+    local cleared = clearFailedMez(core.castTracker, rt and rt.npcSpellApplied, rt and rt.npcSpellLastCast, failureSeen)
+    if cleared then trace('failed mez cast: cleared the record for #%s', tostring(cleared)) end
 end
 
 function plugin.onSaveSettings()
@@ -576,6 +678,9 @@ plugin.logic = {
     normalize    = normalize,
     mezStateOf   = mezStateOf,
     clearFailedMez = clearFailedMez,
+    describeInput  = describeInput,
+    describeResult = describeResult,
+    newMezCasts    = newMezCasts,
     collectState = collectState,
     resolve      = resolve,
     settings     = cfg,
