@@ -10,3 +10,6 @@ __pycache__/
 
 # mutation-check scratch copies
 mezmut_*/
+
+# local copy of TAC (with the target selector registry) for testing; not part of this repo
+TAC/
