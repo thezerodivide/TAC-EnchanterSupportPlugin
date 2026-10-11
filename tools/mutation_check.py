@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""Break mez.lua on purpose and confirm the tests notice.
+
+    python tools/mutation_check.py
+
+For each mutation: copy mez.lua with one rule broken into a scratch copy of the repo, run
+`luajit tests/run.lua` there, and report whether the run failed. A mutation that still
+passes means a rule has no test (or a weak one). Needs `luajit` on the PATH.
+Exit status is 0 only when every mutation is caught.
+"""
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+SRC = open(os.path.join(ROOT, 'mez.lua'), encoding='utf-8', newline='').read().replace('\r\n', '\n')
+
+MUTATIONS = [
+    # decision
+    ('the Main Assist is not excluded', "elseif id == maId then", "elseif false then"),
+    ('damaged protection is off by default', "settings.damagedProtection ~= false", "settings.damagedProtection == true"),
+    ('refresh boundary > becomes >=', "> refreshAt then", ">= refreshAt then"),
+    ('stale peers still protect their target', "if p.fresh == true and p.engaged == true", "if p.engaged == true"),
+    ('an unknown Main Assist target is trusted', "ma.status ~= 'target' or maId <= 0", "maId <= 0"),
+    ('nearest becomes farthest', "d < bestDist or", "d > bestDist or"),
+    # collection and tracking
+    ('listed duration no longer caps a record', "remaining = math.min(remaining, last + info.durationSec - now)", "remaining = remaining"),
+    ('a fresh cast is never pending', "local pending = last ~= nil and (now - last) < ((info.castSec or 2.5) + 0.5)", "local pending = false"),
+    ('a failed cast is never matched to a mob', "if gap <= 3.0 and", "if false and"),
+    ('the same failure is handled every tick', "if seen and seen.at == at and seen.spell == spell then return nil end", "if false then return nil end"),
+    ('the selector cache ignores the spell', "if serial and cache.serial == serial and cache.spell == spellName and cache.result then",
+     "if serial and cache.serial == serial and cache.result then"),
+    ('peers are all marked stale', "peers[#peers + 1] = { fresh = true,", "peers[#peers + 1] = { fresh = false,"),
+    ('an unknown Main Assist is treated as a target', "if id and id > 0 then ma.status, ma.id = 'target', id end", "ma.status, ma.id = 'target', (id or 999)"),
+    ('the damaged setting is ignored', "settings = { damagedProtection = cfg.damagedProtection },", "settings = { damagedProtection = false },"),
+    ('the selector is never unregistered', "pcall(core.unregisterTargetSelector, SELECTOR_LABEL, plugin.id)", "local _ = 0"),
+    ('a fresh no-target heartbeat is treated as unknown', "    elseif fed == false then\n        ma.status = 'none'", "    elseif fed == false then\n        ma.status = 'unknown'"),
+    ('lockouts are not read', "lockedOut = lockedOut,", "lockedOut = false,"),
+    ('range is not read', "inRange   = tlo(function() return rt.isTargetInRange(spellName, id) end, false) == true,", "inRange   = true,"),
+]
+
+
+def run(workdir):
+    r = subprocess.run(['luajit', 'tests/run.lua'], cwd=workdir, capture_output=True, text=True)
+    out = r.stdout + r.stderr
+    m = re.search(r'=== Results: (\d+) passed, (\d+) failed', out)
+    return r.returncode, (int(m.group(2)) if m else None), out
+
+
+def main():
+    tmp = tempfile.mkdtemp(prefix='mezmut_')
+    try:
+        shutil.copytree(os.path.join(ROOT, 'tests'), os.path.join(tmp, 'tests'))
+        open(os.path.join(tmp, 'mez.lua'), 'w', encoding='utf-8', newline='').write(SRC)
+        code, failed, out = run(tmp)
+        if code != 0:
+            print('The unmodified plugin does not pass its own tests; fix that first.\n' + out[-800:])
+            return 2
+        print('baseline: all tests pass\n')
+        missed = 0
+        for name, old, new in MUTATIONS:
+            if SRC.count(old) != 1:
+                print('%-52s MUTATION DID NOT APPLY (%d matches); update tools/mutation_check.py' % (name, SRC.count(old)))
+                missed += 1
+                continue
+            open(os.path.join(tmp, 'mez.lua'), 'w', encoding='utf-8', newline='').write(SRC.replace(old, new))
+            code, failed, out = run(tmp)
+            if code == 0:
+                verdict = 'NOT CAUGHT'
+                missed += 1
+            elif failed is None:
+                crash = [l.strip() for l in out.splitlines() if 'luajit' in l and ':' in l][:1]
+                verdict = 'caught (the run crashed: %s)' % (crash[0][-70:] if crash else '?')
+            else:
+                verdict = 'caught (%d failed)' % failed
+            print('%-52s %s' % (name, verdict))
+        print('\n%s' % ('every mutation was caught' if missed == 0 else '%d mutation(s) not caught' % missed))
+        return 0 if missed == 0 else 1
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

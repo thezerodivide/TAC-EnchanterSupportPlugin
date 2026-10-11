@@ -1,0 +1,5 @@
+# Auto detect text files and perform LF normalization (same as TAC)
+* text=auto
+
+# patches must be stored byte-for-byte (a CRLF conversion would break git apply)
+*.patch -text

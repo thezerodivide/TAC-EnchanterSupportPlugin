@@ -1,0 +1,506 @@
+From 1d607de14ecb103ef932f6ebe4d1f164824f3e88 Mon Sep 17 00:00:00 2001
+From: thezerodivide <thezerodivideyt@gmail.com>
+Date: Sun, 11 Oct 2026 12:19:05 -0400
+Subject: [PATCH] Add a target selector registry for plugins
+
+A plugin can add an entry to every Target dropdown (gems, AAs, discs,
+clickies, abilities) and supply the function that turns it into a spawn id:
+core.registerTargetSelector{owner, label, side, help, resolve}. A plugin's
+selectors are removed when it is disabled or reloaded.
+
+Two related safety changes:
+- An E:/F: target token that is neither built in nor registered (for
+  example a plugin's selector while that plugin is not loaded) resolves to
+  no target instead of falling back to the current target. Empty and legacy
+  tokens keep the old fallback.
+- The Target dropdowns keep a saved token that is not in the list, shown as
+  "<token> (unavailable)", instead of snapping to F: Myself and saving over it.
+
+Tests: Suite 113, plus a stub for the new call in the three plugin-manager
+test environments.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ TAC/lua/triune.lua        | 193 ++++++++++++++++++++++++++++++++++++--
+ tests/test_pure_logic.lua | 155 ++++++++++++++++++++++++++++++
+ 2 files changed, 338 insertions(+), 10 deletions(-)
+
+diff --git a/TAC/lua/triune.lua b/TAC/lua/triune.lua
+index 7460853..eeacc57 100644
+--- a/TAC/lua/triune.lua
++++ b/TAC/lua/triune.lua
+@@ -770,6 +770,132 @@ do
+     for _, t in ipairs(COMBO_OPTIONS.ENEMY) do COMBO_OPTIONS.TARGETS[#COMBO_OPTIONS.TARGETS + 1] = 'E: ' .. t end
+ end
+ 
++-- ============================================================================
++-- Target selector registry
++-- ============================================================================
++-- A plugin can add its own entry to every Target dropdown (gems, AAs, discs,
++-- clickies, abilities) and supply the function that turns that entry into a
++-- spawn id:
++--
++--   core.registerTargetSelector({
++--       owner   = 'myplugin',            -- the plugin's id; its selectors are removed when it is disabled / reloaded
++--       label   = 'Mez Target',          -- shown as 'E: Mez Target'
++--       side    = 'E',                   -- 'E' enemy (default) or 'F' friendly
++--       help    = 'Shown in the Target help table.',
++--       resolve = function(ctx) return spawnId end,
++--   })
++--
++-- ctx = { token, label, cls, when, spellName, pct, entry }. Return a positive
++-- spawn id, or nil when nothing qualifies (the entry then does not fire). The
++-- id goes through the same checks as every built-in target (alive, hostile,
++-- not a pet, ...). A selector that errors counts as "no target". The saved
++-- text of an entry is just 'E: <label>', so a loadout keeps working only where
++-- the plugin that registered it is loaded; anywhere else the entry resolves to
++-- no target (see runtime.isUnknownSelectorToken).
++runtime.targetSelectors = runtime.targetSelectors or {}
++runtime.targetSelectorVersion = runtime.targetSelectorVersion or 0
++
++local function builtinTargetBase(label)
++    if label == 'Current Target' or label == 'Target' or label == 'Self' or label == 'Myself' then return true end
++    for _, t in ipairs(COMBO_OPTIONS.FRIENDLY) do if t == label then return true end end
++    for _, t in ipairs(COMBO_OPTIONS.ENEMY) do if t == label then return true end end
++    return false
++end
++
++-- Returns true, or false + the reason it was refused.
++function runtime.registerTargetSelector(spec)
++    if type(spec) ~= 'table' then return false, 'spec must be a table' end
++    local label = ''
++    if type(spec.label) == 'string' then label = (spec.label:gsub('^%s*(.-)%s*$', '%1')) end
++    if label == '' then return false, 'label is required' end
++    if label:find('^[A-Za-z]:') then return false, 'label must not start with a side prefix' end
++    if type(spec.resolve) ~= 'function' then return false, 'resolve must be a function' end
++    local side = spec.side or 'E'
++    if side ~= 'E' and side ~= 'F' then return false, "side must be 'E' or 'F'" end
++    if builtinTargetBase(label) then return false, 'label collides with a built-in target' end
++    local existing = runtime.targetSelectors[label]
++    if existing and existing.owner ~= spec.owner then
++        return false, 'label already registered by ' .. tostring(existing.owner or 'another plugin')
++    end
++    local token = side .. ': ' .. label
++    if existing and existing.side ~= side then
++        runtime.unregisterTargetSelector(label, spec.owner)
++    end
++    runtime.targetSelectors[label] = {
++        label = label, side = side, token = token, help = tostring(spec.help or ''),
++        resolve = spec.resolve, owner = spec.owner,
++    }
++    local present = false
++    for _, v in ipairs(COMBO_OPTIONS.TARGETS) do if v == token then present = true; break end end
++    if not present then
++        -- keep each side's entries together: insert after the last one of this side
++        local at = #COMBO_OPTIONS.TARGETS
++        for i = #COMBO_OPTIONS.TARGETS, 1, -1 do
++            if COMBO_OPTIONS.TARGETS[i]:sub(1, 2) == side .. ':' then at = i; break end
++        end
++        table.insert(COMBO_OPTIONS.TARGETS, at + 1, token)
++    end
++    runtime.targetSelectorVersion = runtime.targetSelectorVersion + 1
++    return true
++end
++
++function runtime.unregisterTargetSelector(label, owner)
++    local sel = runtime.targetSelectors[label]
++    if not sel then return false end
++    if owner ~= nil and sel.owner ~= owner then return false end
++    runtime.targetSelectors[label] = nil
++    for i = #COMBO_OPTIONS.TARGETS, 1, -1 do
++        if COMBO_OPTIONS.TARGETS[i] == sel.token then table.remove(COMBO_OPTIONS.TARGETS, i) end
++    end
++    runtime.targetSelectorVersion = runtime.targetSelectorVersion + 1
++    return true
++end
++
++function runtime.unregisterTargetSelectorsByOwner(owner)
++    if owner == nil then return 0 end
++    local labels = {}
++    for label, sel in pairs(runtime.targetSelectors) do
++        if sel.owner == owner then labels[#labels + 1] = label end
++    end
++    for _, label in ipairs(labels) do runtime.unregisterTargetSelector(label, owner) end
++    return #labels
++end
++
++-- Runs the selector for `label`; a positive spawn id or nil.
++function runtime.runTargetSelector(label, token, cls, when, spellName, pct, extra)
++    local sel = runtime.targetSelectors[label]
++    if not sel then return nil end
++    local ok, res = pcall(sel.resolve, {
++        token = token, label = label, cls = cls, when = when, spellName = spellName, pct = pct, entry = extra,
++    })
++    if not ok then
++        runtime.selectorErrorAt = runtime.selectorErrorAt or {}
++        local now = os.clock()
++        if (now - (runtime.selectorErrorAt[label] or -1e9)) > 30 then
++            runtime.selectorErrorAt[label] = now
++            print(string.format('\ar[Triune]\ax target selector "%s" failed: %s', label, tostring(res)))
++        end
++        return nil
++    end
++    res = tonumber(res)
++    if res and res > 0 then return res end
++    return nil
++end
++
++-- True for a token in the plugin form ('E: Something' / 'F: Something') that
++-- is neither built in nor registered right now, e.g. an entry saved while a
++-- plugin was loaded and opened later without it. Such an entry must resolve to
++-- no target and never fall back to the current target. Other odd values (no
++-- prefix, old prefixes) are left to the old behavior.
++function runtime.isUnknownSelectorToken(token, base)
++    local tok = tostring(token or '')
++    local side = tok:sub(1, 2)
++    if side ~= 'E:' and side ~= 'F:' then return false end
++    if base == nil or base == '' then return false end
++    if runtime.targetSelectors[base] then return false end
++    return true
++end
++
+ -- ============================================================================
+ -- Local Theme & Common Helpers (Self-Contained Module)
+ -- ============================================================================
+@@ -6329,6 +6455,34 @@ end
+ -- ============================================================================
+ local UI = {}
+ 
++-- The Target dropdown. A saved token that is not in the list (a plugin's
++-- selector while that plugin is not loaded) used to snap to the first entry
++-- and be saved over; it is now shown as '<token> (unavailable)' and kept.
++-- Returns the token to store.
++UI.targetOptsCache = {}
++function UI.targetComboOptions(token)
++    local list = COMBO_OPTIONS.TARGETS
++    local idx
++    for i, v in ipairs(list) do if v == token then idx = i; break end end
++    if idx then return list, idx, false end
++    local c = UI.targetOptsCache[token]
++    if not c or c.ver ~= runtime.targetSelectorVersion or c.n ~= #list then
++        local opts = {}
++        for i, v in ipairs(list) do opts[i] = v end
++        opts[#opts + 1] = tostring(token) .. ' (unavailable)'
++        c = { ver = runtime.targetSelectorVersion, n = #list, opts = opts }
++        UI.targetOptsCache[token] = c
++    end
++    return c.opts, #c.opts, true
++end
++function UI.targetCombo(id, token)
++    if token == nil or token == '' then token = 'F: Myself' end
++    local opts, idx, isExtra = UI.targetComboOptions(token)
++    local ti = ImGui.Combo(id, idx, opts)
++    if isExtra and ti == idx then return token end
++    return COMBO_OPTIONS.TARGETS[ti] or token
++end
++
+ function UI.accent(c, txt) ImGui.TextColored(c[1], c[2], c[3], c[4], txt) end
+ local accent = UI.accent
+ function UI.setTooltip(fmt, ...)
+@@ -6824,6 +6978,10 @@ function runtime.initPluginManager()
+             getPetSpawnInfo       = runtime.getPetSpawnInfo or getPetSpawnInfo,
+             isSpawnAlive          = runtime.isSpawnAlive or isSpawnAlive,
+             addIgnore             = runtime.addIgnore,
++            -- Target selector registry: add an entry to the Target dropdowns.
++            -- See the comment above runtime.registerTargetSelector.
++            registerTargetSelector   = function(spec) return runtime.registerTargetSelector(spec) end,
++            unregisterTargetSelector = function(label, owner) return runtime.unregisterTargetSelector(label, owner) end,
+             -- Extended Target window per-spawn overrides (see runtime.setXtForce)
+             setXtForce            = runtime.setXtForce,
+             setXtIgnore           = runtime.setXtIgnore,
+@@ -7314,6 +7472,7 @@ function runtime.initPluginManager()
+         if p.instance.onDestroy then
+             pcall(p.instance.onDestroy)
+         end
++        runtime.unregisterTargetSelectorsByOwner(id)
+     end
+ 
+     function pm.reloadPlugin(id)
+@@ -8769,6 +8928,17 @@ function UI.drawHelpTab()
+                 ImGui.TableNextColumn()
+                 ImGui.TextWrapped(entry.desc)
+             end
++            local regLabels = {}
++            for label in pairs(runtime.targetSelectors) do regLabels[#regLabels + 1] = label end
++            table.sort(regLabels)
++            for _, label in ipairs(regLabels) do
++                local sel = runtime.targetSelectors[label]
++                ImGui.TableNextRow()
++                ImGui.TableNextColumn()
++                accent(sel.side == 'F' and GOOD or ERR, sel.token)
++                ImGui.TableNextColumn()
++                ImGui.TextWrapped(sel.help ~= '' and sel.help or ('Provided by the ' .. tostring(sel.owner or 'plugin') .. ' plugin.'))
++            end
+             ImGui.EndTable()
+         end
+ 
+@@ -9006,11 +9176,10 @@ function UI.drawGemList(gemsTable, idPrefix, isActiveSet, allowBurn)
+ 
+                         -- target
+                         ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(133))
+-                        local ti = ImGui.Combo('##t', idxOf(COMBO_OPTIONS.TARGETS, g.target or 'F: Myself'), COMBO_OPTIONS.TARGETS)
++                        local newTgt = UI.targetCombo('##t', g.target)
+                         if ImGui.IsItemHovered() then
+                             ImGui.SetTooltip('Target: who to cast on (Myself, Tank, Target, MA Target, Pet).')
+                         end
+-                        local newTgt = COMBO_OPTIONS.TARGETS[ti]
+                         if newTgt ~= g.target then
+                             g.target = newTgt
+                             runtime.saveLoadout(true)
+@@ -9452,11 +9621,11 @@ function UI.drawClickieTab()
+ 
+             if c.enabled ~= false then
+                 ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(133))
+-                local ti = ImGui.Combo('##ct', idxOf(COMBO_OPTIONS.TARGETS, c.target or 'F: Myself'), COMBO_OPTIONS.TARGETS)
++                local newCTarget = UI.targetCombo('##ct', c.target)
+                 if ImGui.IsItemHovered() then
+                     UI.setTooltip('Target condition: who or what to use this clickie on (e.g. Myself, Tank, Current Target, MA Target, Pet).')
+                 end
+-                c.target = COMBO_OPTIONS.TARGETS[ti]
++                c.target = newCTarget
+ 
+                 ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(116))
+                 local wi = ImGui.Combo('##cw', idxOf(COMBO_OPTIONS.WHENS, c.when or 'missing buff'), COMBO_OPTIONS.WHENS)
+@@ -9638,11 +9807,11 @@ function UI.drawAbilitiesTab()
+                         end
+                     else
+                         ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(133))
+-                        local ti = ImGui.Combo('##actt', idxOf(COMBO_OPTIONS.TARGETS, entry.target), COMBO_OPTIONS.TARGETS)
++                        local newActTarget = UI.targetCombo('##actt', entry.target)
+                         if ImGui.IsItemHovered() then
+                             ImGui.SetTooltip('Target condition: who or what to use this ability on (e.g. Myself, Tank, Current Target, MA Target, Pet).')
+                         end
+-                        entry.target = COMBO_OPTIONS.TARGETS[ti]
++                        entry.target = newActTarget
+                         ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(116))
+                         local wi = ImGui.Combo('##actw', idxOf(COMBO_OPTIONS.WHENS, entry.when), COMBO_OPTIONS.WHENS)
+                         if ImGui.IsItemHovered() then
+@@ -9774,11 +9943,11 @@ function UI.drawAATab()
+                                 end
+                                 if entry.enabled then
+                                     ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(133))
+-                                    local ti = ImGui.Combo('##aat', idxOf(COMBO_OPTIONS.TARGETS, entry.target), COMBO_OPTIONS.TARGETS)
++                                    local newAATarget = UI.targetCombo('##aat', entry.target)
+                                     if ImGui.IsItemHovered() then
+                                         ImGui.SetTooltip('Target condition: who or what to cast this ability on (e.g. Myself, Tank, Current Target, MA Target, Pet).')
+                                     end
+-                                    entry.target = COMBO_OPTIONS.TARGETS[ti]
++                                    entry.target = newAATarget
+                                     ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(116))
+                                     local wi = ImGui.Combo('##aaw', idxOf(COMBO_OPTIONS.WHENS, entry.when), COMBO_OPTIONS.WHENS)
+                                     if ImGui.IsItemHovered() then
+@@ -10085,11 +10254,11 @@ function UI.drawDiscTab()
+                     end
+                     if entry.enabled then
+                         ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(133))
+-                        local ti = ImGui.Combo('##dt', idxOf(COMBO_OPTIONS.TARGETS, entry.target), COMBO_OPTIONS.TARGETS)
++                        local newDiscTarget = UI.targetCombo('##dt', entry.target)
+                         if ImGui.IsItemHovered() then
+                             ImGui.SetTooltip('Target condition: who or what to use this discipline on (e.g. Myself, Tank, Current Target, MA Target, Pet).')
+                         end
+-                        entry.target = COMBO_OPTIONS.TARGETS[ti]
++                        entry.target = newDiscTarget
+                         ImGui.SameLine(); ImGui.SetNextItemWidth(UI.px(116))
+                         local wi = ImGui.Combo('##dw', idxOf(COMBO_OPTIONS.WHENS, entry.when), COMBO_OPTIONS.WHENS)
+                         if ImGui.IsItemHovered() then
+@@ -17588,6 +17757,10 @@ function runtime.resolveTargetId(token, cls, when, spellName, pct, extra)
+         end
+     elseif b == 'All Enemies' then
+         id = runtime.resolveAllEnemiesTargetId(spellName, when, pct, cls, extra)
++    elseif runtime.targetSelectors[b] then
++        id = runtime.runTargetSelector(b, token, cls, when, spellName, pct, extra)
++    elseif runtime.isUnknownSelectorToken(token, b) then
++        return nil -- a plugin's selector that is not loaded: never fall back to the current target
+     else
+         id = mq.TLO.Target.ID()
+     end
+diff --git a/tests/test_pure_logic.lua b/tests/test_pure_logic.lua
+index 7937ff3..1865304 100644
+--- a/tests/test_pure_logic.lua
++++ b/tests/test_pure_logic.lua
+@@ -10812,6 +10812,7 @@ do
+     local ctrl88 = { plugins = {} }
+     local saveCount = 0
+     local env = {
++        unregisterTargetSelectorsByOwner = function() return 0 end,
+         ctrl = ctrl88,
+         mq = mockMq,
+         ImGui = mockImGui,
+@@ -11432,6 +11433,7 @@ do
+         local mqDelays = {}
+         mockMq.delay = function(ms) mqDelays[#mqDelays + 1] = ms end
+         local env = {
++            unregisterTargetSelectorsByOwner = function() return 0 end,
+             ctrl = { plugins = {} }, mq = mockMq, ImGui = mockImGui,
+             UI = { accent = noop, setTooltip = noop, pushTheme = noop, popTheme = noop, preBeginWindow = noop, postBeginWindow = noop,
+                    drawStatusProgressBar = noop, drawSpellIcon = function() return false end,
+@@ -12331,6 +12333,7 @@ do
+     }
+     package.loaded['mq'] = mockMq
+     local env = {
++        unregisterTargetSelectorsByOwner = function() return 0 end,
+         ctrl = { plugins = {} }, mq = mockMq,
+         ImGui = setmetatable({ Button = function() return false end, SmallButton = function() return false end, Checkbox = function(_, v) return v end, IsItemHovered = function() return false end, BeginTable = function() return false end }, { __index = function() return noop end }),
+         UI = { accent = noop, setTooltip = noop, pushTheme = noop, popTheme = noop, preBeginWindow = noop, postBeginWindow = noop,
+@@ -20242,6 +20245,158 @@ do
+     assert_true(zoneSaves >= 3, 'Suite 112: Set / Clear / radius all update the zone entry')
+ end
+ 
++-- ---------------------------------------------------------------------------
++-- Suite 113: Target selector registry
++-- ---------------------------------------------------------------------------
++do
++    print('--- Suite 113: Target selector registry ---')
++    local text = readFile('TAC/lua/triune.lua'):gsub('\r\n', '\n')
++    local function slice(startPat, endPat)
++        local s = assert(text:find(startPat, 1, true), 'missing: ' .. startPat)
++        local e = assert(text:find(endPat, s, true), 'missing: ' .. endPat)
++        return text:sub(s, e - 1)
++    end
++    local regCode = slice('local function builtinTargetBase', '-- Local Theme & Common Helpers')
++    local uiCode = slice('UI.targetOptsCache = {}', 'function UI.targetCombo(')
++    local resolveCode = slice("elseif b == 'All Enemies' then", "    if not id or id <= 0 then return nil end")
++
++    local printed = {}
++    local function newWorld()
++        local COMBO_OPTIONS = {
++            FRIENDLY = { 'Myself', 'Main Assist', 'Pet' },
++            ENEMY    = { 'Current Target', 'Assist Target', 'All Enemies' },
++            TARGETS  = { 'F: Myself', 'F: Main Assist', 'F: Pet', 'E: Current Target', 'E: Assist Target', 'E: All Enemies' },
++        }
++        local runtime = { targetSelectors = {}, targetSelectorVersion = 0 }
++        local UI = {}
++        local env = setmetatable({
++            COMBO_OPTIONS = COMBO_OPTIONS, runtime = runtime, UI = UI,
++            print = function(...) printed[#printed + 1] = table.concat({ ... }, ' ') end,
++        }, { __index = _G })
++        local chunk = assert((loadstring or load)(
++            'runtime.targetSelectors = {}\nruntime.targetSelectorVersion = 0\n'
++            .. regCode .. '\n' .. uiCode .. '\nreturn true', 'suite112'))
++        setfenv(chunk, env)
++        chunk()
++        return runtime, COMBO_OPTIONS, UI
++    end
++    local function indexOf(list, v)
++        for i, x in ipairs(list) do if x == v then return i end end
++        return nil
++    end
++
++    -- registering
++    local runtime, OPTS, UI = newWorld()
++    local seen
++    local ok, err = runtime.registerTargetSelector({
++        owner = 'mez', label = 'Mez Target', help = 'h',
++        resolve = function(ctx) seen = ctx; return 321 end,
++    })
++    assert_eq(ok, true, 'registry: a valid selector registers')
++    assert_eq(OPTS.TARGETS[#OPTS.TARGETS], 'E: Mez Target', 'registry: enemy selector goes after the last E: entry')
++    assert_eq(OPTS.TARGETS[indexOf(OPTS.TARGETS, 'E: Mez Target') - 1], 'E: All Enemies', 'registry: ...next to the other enemy targets')
++    assert_eq(runtime.targetSelectorVersion, 1, 'registry: version bumps on register')
++
++    ok = runtime.registerTargetSelector({ owner = 'mez', label = 'Mez Target', resolve = function() return 1 end })
++    assert_eq(ok, true, 'registry: the same owner may register the same label again')
++    local n = 0
++    for _, v in ipairs(OPTS.TARGETS) do if v == 'E: Mez Target' then n = n + 1 end end
++    assert_eq(n, 1, 'registry: re-registering does not duplicate the dropdown entry')
++    runtime.registerTargetSelector({ owner = 'mez', label = 'Mez Target', resolve = function(ctx) seen = ctx; return 321 end })
++
++    ok, err = runtime.registerTargetSelector({ owner = 'other', label = 'Mez Target', resolve = function() return 1 end })
++    assert_eq(ok, false, 'registry: another owner cannot take a registered label')
++    assert_true(tostring(err):find('already registered'), 'registry: the refusal says why')
++
++    for _, bad in ipairs({ 'Current Target', 'Pet', 'Myself', 'Target', 'All Enemies', 'Self' }) do
++        assert_eq((runtime.registerTargetSelector({ label = bad, resolve = function() return 1 end })), false,
++            'registry: built-in name refused: ' .. bad)
++    end
++    assert_eq((runtime.registerTargetSelector({ label = '', resolve = function() return 1 end })), false, 'registry: empty label refused')
++    assert_eq((runtime.registerTargetSelector({ label = 'E: Thing', resolve = function() return 1 end })), false, 'registry: side prefix in the label refused')
++    assert_eq((runtime.registerTargetSelector({ label = 'X', resolve = 'nope' })), false, 'registry: non-function resolve refused')
++    assert_eq((runtime.registerTargetSelector({ label = 'X', side = 'Z', resolve = function() return 1 end })), false, 'registry: bad side refused')
++    assert_eq((runtime.registerTargetSelector(nil)), false, 'registry: nil spec refused')
++
++    runtime.registerTargetSelector({ owner = 'buffs', label = 'Group Pick', side = 'F', resolve = function() return 9 end })
++    assert_eq(OPTS.TARGETS[indexOf(OPTS.TARGETS, 'F: Group Pick') - 1], 'F: Pet', 'registry: friendly selector goes after the last F: entry')
++
++    -- running a selector
++    local id = runtime.runTargetSelector('Mez Target', 'E: Mez Target', 'Enc', 'in combat', 'Dazzle', 100, { kind = 'util' })
++    assert_eq(id, 321, 'run: returns the selector\'s spawn id')
++    assert_eq(seen.spellName, 'Dazzle', 'run: the spell name reaches the selector')
++    assert_eq(seen.cls, 'Enc', 'run: the class reaches the selector')
++    assert_eq(seen.when, 'in combat', 'run: the When reaches the selector')
++    assert_eq(seen.entry.kind, 'util', 'run: the entry reaches the selector')
++    assert_eq(seen.token, 'E: Mez Target', 'run: the token reaches the selector')
++    assert_nil(runtime.runTargetSelector('Missing', 'E: Missing'), 'run: unknown label gives no target')
++    for _, ret in ipairs({ 0, -4, 'abc' }) do
++        runtime.registerTargetSelector({ owner = 'mez', label = 'Mez Target', resolve = function() return ret end })
++        assert_nil(runtime.runTargetSelector('Mez Target', 'E: Mez Target'), 'run: ' .. tostring(ret) .. ' is no target')
++    end
++    runtime.registerTargetSelector({ owner = 'mez', label = 'Mez Target', resolve = function() return nil end })
++    assert_nil(runtime.runTargetSelector('Mez Target', 'E: Mez Target'), 'run: nil is no target')
++    printed = {}
++    runtime.registerTargetSelector({ owner = 'mez', label = 'Mez Target', resolve = function() error('boom') end })
++    assert_nil(runtime.runTargetSelector('Mez Target', 'E: Mez Target'), 'run: an erroring selector gives no target')
++    assert_nil(runtime.runTargetSelector('Mez Target', 'E: Mez Target'), 'run: ...every time')
++    assert_eq(#printed, 1, 'run: the error is reported once, not on every call')
++
++    -- unknown plugin-form tokens fail closed; legacy values keep the old behavior
++    runtime.registerTargetSelector({ owner = 'mez', label = 'Mez Target', resolve = function() return 5 end })
++    assert_eq(runtime.isUnknownSelectorToken('E: Mez Target', 'Mez Target'), false, 'unknown: a registered selector is known')
++    runtime.unregisterTargetSelector('Mez Target', 'mez')
++    assert_eq(runtime.isUnknownSelectorToken('E: Mez Target', 'Mez Target'), true, 'unknown: an unregistered E: token is unknown')
++    assert_eq(runtime.isUnknownSelectorToken('F: Whatever', 'Whatever'), true, 'unknown: an unregistered F: token is unknown')
++    assert_eq(runtime.isUnknownSelectorToken('Target', 'Current Target'), false, 'unknown: legacy "Target" has no side prefix')
++    assert_eq(runtime.isUnknownSelectorToken('', ''), false, 'unknown: an empty token keeps the old behavior')
++    assert_eq(runtime.isUnknownSelectorToken(nil, ''), false, 'unknown: a missing token keeps the old behavior')
++    assert_eq(runtime.isUnknownSelectorToken('S: Self', 'S: Self'), false, 'unknown: an old non-E/F prefix keeps the old behavior')
++    assert_eq(runtime.isUnknownSelectorToken('E: Mez Target', ''), false, 'unknown: an empty base is not treated as unknown')
++
++    -- unregistering
++    runtime.registerTargetSelector({ owner = 'mez', label = 'Mez Target', resolve = function() return 5 end })
++    runtime.registerTargetSelector({ owner = 'mez', label = 'Second', resolve = function() return 6 end })
++    local v0 = runtime.targetSelectorVersion
++    assert_eq(runtime.unregisterTargetSelector('Mez Target', 'someone-else'), false, 'unregister: wrong owner refused')
++    assert_eq(runtime.unregisterTargetSelectorsByOwner('mez'), 2, 'unregister: by owner removes all of that owner\'s selectors')
++    assert_nil(indexOf(OPTS.TARGETS, 'E: Mez Target'), 'unregister: dropdown entry removed')
++    assert_nil(indexOf(OPTS.TARGETS, 'E: Second'), 'unregister: every entry removed')
++    assert_true(indexOf(OPTS.TARGETS, 'F: Group Pick'), 'unregister: other owners untouched')
++    assert_true(runtime.targetSelectorVersion > v0, 'unregister: version bumps')
++    assert_eq(runtime.unregisterTargetSelector('Nope'), false, 'unregister: unknown label is a no-op')
++    assert_eq(runtime.unregisterTargetSelectorsByOwner(nil), 0, 'unregister: nil owner removes nothing')
++
++    -- the dropdown keeps a token that is not in the list
++    runtime, OPTS, UI = newWorld()
++    local list, idx, extra = UI.targetComboOptions('F: Pet')
++    assert_eq(list, OPTS.TARGETS, 'combo: a known token uses the real list')
++    assert_eq(OPTS.TARGETS[idx], 'F: Pet', 'combo: ...at its own index')
++    assert_eq(extra, false, 'combo: ...with no extra item')
++    local list2, idx2, extra2 = UI.targetComboOptions('E: Mez Target')
++    assert_eq(extra2, true, 'combo: an unknown token gets an extra item')
++    assert_eq(list2[idx2], 'E: Mez Target (unavailable)', 'combo: ...labelled unavailable')
++    assert_eq(idx2, #list2, 'combo: ...selected, at the end')
++    assert_eq(#list2, #OPTS.TARGETS + 1, 'combo: the real list is otherwise unchanged')
++    assert_nil(indexOf(OPTS.TARGETS, 'E: Mez Target (unavailable)'), 'combo: the real list is not polluted')
++    local list3 = UI.targetComboOptions('E: Mez Target')
++    assert_eq(list3, list2, 'combo: the unavailable-token list is cached between frames')
++    runtime.registerTargetSelector({ owner = 'mez', label = 'Other', resolve = function() return 1 end })
++    local list4 = UI.targetComboOptions('E: Mez Target')
++    assert_true(list4 ~= list2, 'combo: the cache refreshes when the registry changes')
++    assert_eq(#list4, #OPTS.TARGETS + 1, 'combo: ...and includes the new entry')
++    runtime.registerTargetSelector({ owner = 'mez', label = 'Mez Target', resolve = function() return 1 end })
++    local list5, idx5, extra5 = UI.targetComboOptions('E: Mez Target')
++    assert_eq(extra5, false, 'combo: once the plugin registers, the token is a normal entry again')
++    assert_eq(list5[idx5], 'E: Mez Target', 'combo: ...selected normally')
++
++    -- resolveTargetId: the dispatch branch text
++    assert_true(resolveCode:find('runtime.targetSelectors[b]', 1, true), 'resolve: registered selectors are dispatched')
++    assert_true(resolveCode:find('isUnknownSelectorToken(token, b)', 1, true), 'resolve: unknown plugin-form tokens are checked')
++    assert_true(resolveCode:find('return nil', 1, true), 'resolve: ...and return no target')
++    assert_true(resolveCode:find('id = mq.TLO.Target.ID()', 1, true), 'resolve: other values keep the current-target fallback')
++end
++
+ print(string.format('\n=== Results: %d passed, %d failed ===', pass, fail))
+ if fail > 0 then
+     print('\nFailures:')
+-- 
+2.55.0.windows.5
+

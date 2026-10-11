@@ -1,0 +1,12 @@
+# scratch and editor files
+*.tmp
+*.orig
+*.rej
+*.log
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+
+# mutation-check scratch copies
+mezmut_*/
