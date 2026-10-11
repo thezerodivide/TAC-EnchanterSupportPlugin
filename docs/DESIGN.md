@@ -91,6 +91,8 @@ Presumed, not observed. Rules (the owner removed anything stronger than the evid
   record on a resist, fizzle, interrupt or "did not take hold". The plugin reuses that and adds one clear: when `castTracker.failed` is set for a mez cast (any other
   failure: cannot see target, out of range, ...), it drops the record of the mob whose cast time matches.
 - "Confirmed" means *cast-completion-confirmed*: TAC believes the cast finished without a failure. It does **not** prove the mez landed.
+- **Messages (added after the first in-game test).** The game prints the landing text, "has been awakened by" and "has worn off of" lines (seen for Rapture, 2026-10-11). The plugin listens for them and matches them to TAC's records **by mob
+  name** (the messages carry no id). An awakened or worn-off message drops the record; a landing message only confirms the cast in the trace; ambiguity (two same-named mobs) changes nothing. Missing landing messages do not clear anything yet.
 - The listed duration caps the record because the spell file says Mesmerize lasts 4 ticks (TAC would record 24 s) while the server's spell list says 12 s. Which is right is unverified; capping is conservative.
 
 ## 6. Spell data
@@ -119,7 +121,8 @@ the spell file has 118 more Enchanter mez names above level 70.
 | A shadow "combat target" tracker with sticky behavior | Two systems guessing what the engine will kill: the conflict that had to be avoided. |
 | Post-cast buff verification that pauses auto-attack and holds the target | Reaches into the combat engine (attack off/on, target restore at five sites). Too intrusive; removed. |
 | Reading the mob's mez buff | The client only exposes buffs for your *current target* (and group members). Deferred; "Target.Mezzed"/buff reads are an optional refinement for the targeted mob only. |
-| An "X has been awakened by Y" handler | No evidence the message exists on this server (searched the EverQuest logs on the machine: nothing). Do not build around it until a real log shows it. |
+| An "X has been awakened by Y" handler | Was rejected for lack of evidence. A real log on 2026-10-11 shows the message, so it is built (section 5). |
+| A target hold plus buff read to verify the mez | Needs a plugin hook to keep the target, and the engine auto-attacks the *current* target, so it would also need to suppress that. The landing message makes it unnecessary for now. |
 | A separate mez tracker | TAC already records every duration spell it casts; reuse it. |
 | Lowest-HP fallback when the combat target is unknown | For this selector, protecting the kill target beats mez uptime: return no target. |
 | Failing closed on every missing input | Piloted/other-PC characters never have heartbeats. |

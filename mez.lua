@@ -79,21 +79,23 @@ local cfg = {
 -- maxMobLevel is the highest mob level the spell can mesmerize (the Mesmerize
 -- effect's base value). castSec is the 2.5 s cast every single-target Enchanter
 -- mez shares. durationSec is the listed duration, used only as a conservative
--- cap on how long a cast is presumed to last. supported = false carries the
--- reason it is refused.
+-- cap on how long a cast is presumed to last. landed is the text the game prints
+-- after the mob's name when the mez takes hold (the spell file's "cast on other"
+-- text; only Rapture's has been seen in a real log). supported = false carries
+-- the reason it is refused.
 local SPELLS = {
-    { name = 'Mesmerize',                maxMobLevel = 55, castSec = 2.5, durationSec = 12, supported = true },
-    { name = 'Enthrall',                 maxMobLevel = 55, castSec = 2.5, durationSec = 48, supported = true },
-    { name = 'Entrance',                 maxMobLevel = 55, castSec = 2.5, durationSec = 72, supported = true },
-    { name = 'Dazzle',                   maxMobLevel = 55, castSec = 2.5, durationSec = 96, supported = true },
-    { name = 'Glamour of Kintaz',        maxMobLevel = 57, castSec = 2.5, durationSec = 54, supported = true },
-    { name = 'Rapture',                  maxMobLevel = 63, castSec = 2.5, durationSec = 60, supported = true },
-    { name = 'Ancient: Eternal Rapture', maxMobLevel = 63, castSec = 2.5, durationSec = 60, supported = true },
-    { name = 'Apathy',                   maxMobLevel = 62, castSec = 2.5, durationSec = 54, supported = true },
-    { name = 'Sleep',                    maxMobLevel = 65, castSec = 2.5, durationSec = 54, supported = true },
-    { name = 'Bliss',                    maxMobLevel = 68, castSec = 2.5, durationSec = 54, supported = true },
-    { name = 'Felicity',                 maxMobLevel = 70, castSec = 2.5, durationSec = 54, supported = true },
-    { name = 'Euphoria',                 maxMobLevel = 73, castSec = 2.5, durationSec = 54, supported = true },
+    { name = 'Mesmerize',                maxMobLevel = 55, castSec = 2.5, durationSec = 12, landed = ' has been mesmerized.', supported = true },
+    { name = 'Enthrall',                 maxMobLevel = 55, castSec = 2.5, durationSec = 48, landed = ' has been enthralled.', supported = true },
+    { name = 'Entrance',                 maxMobLevel = 55, castSec = 2.5, durationSec = 72, landed = ' has been entranced.', supported = true },
+    { name = 'Dazzle',                   maxMobLevel = 55, castSec = 2.5, durationSec = 96, landed = ' has been mesmerized.', supported = true },
+    { name = 'Glamour of Kintaz',        maxMobLevel = 57, castSec = 2.5, durationSec = 54, landed = ' has been mesmerized by the Glamour of Kintaz.', supported = true },
+    { name = 'Rapture',                  maxMobLevel = 63, castSec = 2.5, durationSec = 60, landed = ' swoons in raptured bliss.', supported = true },
+    { name = 'Ancient: Eternal Rapture', maxMobLevel = 63, castSec = 2.5, durationSec = 60, landed = ' swoons in raptured bliss.', supported = true },
+    { name = 'Apathy',                   maxMobLevel = 62, castSec = 2.5, durationSec = 54, landed = ' stares off into the distance.', supported = true },
+    { name = 'Sleep',                    maxMobLevel = 65, castSec = 2.5, durationSec = 54, landed = ' falls asleep.', supported = true },
+    { name = 'Bliss',                    maxMobLevel = 68, castSec = 2.5, durationSec = 54, landed = "'s jaw falls as they begin to drool.", supported = true },
+    { name = 'Felicity',                 maxMobLevel = 70, castSec = 2.5, durationSec = 54, landed = ' gazes happily into space.', supported = true },
+    { name = 'Euphoria',                 maxMobLevel = 73, castSec = 2.5, durationSec = 54, landed = ' gazes happily into space.', supported = true },
     { name = 'Echoing Madness',          supported = false, reason = 'it spreads to nearby mobs and could wake or mez the mob being fought' },
     { name = 'Mesmerization',            supported = false, reason = 'area mez around the target' },
     { name = 'Fascination',              supported = false, reason = 'area mez around the target' },
@@ -330,6 +332,94 @@ local function clearFailedMez(tracker, appliedByMob, lastCastByMob, seen)
 end
 
 -- ----------------------------------------------------------------------------
+-- Mez messages (pure helpers)
+-- ----------------------------------------------------------------------------
+-- The game prints "<mob> swoons in raptured bliss." when a mez lands, "<mob> has
+-- been awakened by <who>." when it breaks and "Your <spell> spell has worn off of
+-- <mob>." when it ends. The messages carry the mob's NAME, not its id, so they are
+-- matched to TAC's per-mob records by name; if that is not unambiguous nothing is
+-- changed. Records: { mobId, name, spell, castAt, expiry } (see collectMezRecords).
+local LANDING_WINDOW_SEC = 8   -- a landing message counts only this long after the cast was issued (a guess)
+
+-- The distinct landing texts, in table order.
+local function landedTexts()
+    local out, seen = {}, {}
+    for _, sp in ipairs(SPELLS) do
+        if sp.supported and sp.landed and not seen[sp.landed] then
+            seen[sp.landed] = true
+            out[#out + 1] = sp.landed
+        end
+    end
+    return out
+end
+
+-- The set of supported spells that print this landing text.
+local function spellsForLanding(text)
+    local set = {}
+    for _, sp in ipairs(SPELLS) do
+        if sp.supported and sp.landed == text then set[sp.name] = true end
+    end
+    return set
+end
+
+local function sameName(a, b)
+    return type(a) == 'string' and type(b) == 'string' and a ~= '' and a:lower() == b:lower()
+end
+
+local function castKey(mobId, spell) return tostring(mobId) .. ':' .. tostring(spell) end
+
+-- The one cast this landing message belongs to, or nil and a reason ('none' or
+-- 'ambiguous'). `confirmed[castKey]` holds the cast time already confirmed.
+local function matchLanding(spells, name, records, now, confirmed)
+    local found
+    for _, r in ipairs(records or {}) do
+        local age = now - r.castAt
+        if spells[r.spell] and sameName(r.name, name) and age >= -1 and age <= LANDING_WINDOW_SEC
+            and (confirmed or {})[castKey(r.mobId, r.spell)] ~= r.castAt then
+            if found then return nil, 'ambiguous' end
+            found = r
+        end
+    end
+    if found then return found end
+    return nil, 'none'
+end
+
+-- The one mob whose mez ended: same name and a record still presumed active (and,
+-- when the message names the spell, that spell). Returns mobId and the list of the
+-- spells to drop, or nil and a reason ('none' or 'ambiguous').
+local function matchEnd(name, spell, records, now)
+    local mobId, spells
+    for _, r in ipairs(records or {}) do
+        if sameName(r.name, name) and (r.expiry or 0) > now and (spell == nil or r.spell == spell) then
+            if mobId and mobId ~= r.mobId then return nil, 'ambiguous' end
+            if mobId == r.mobId then
+                spells[#spells + 1] = r.spell
+            else
+                mobId, spells = r.mobId, { r.spell }
+            end
+        end
+    end
+    if mobId then return mobId, spells end
+    return nil, 'none'
+end
+
+-- Casts that got no landing message in time: `pending` is { key = { mobId, spell, at } }.
+-- Entries past the window are removed; those never confirmed (and whose record
+-- still stands) are returned so the trace can say so.
+local function unconfirmedCasts(pending, confirmed, appliedByMob, now)
+    local out = {}
+    for key, p in pairs(pending) do
+        if now - p.at > LANDING_WINDOW_SEC then
+            pending[key] = nil
+            local stillRecorded = appliedByMob and appliedByMob[p.mobId] and appliedByMob[p.mobId][p.spell] ~= nil
+            if (confirmed or {})[key] ~= p.at and stillRecorded then out[#out + 1] = p end
+        end
+    end
+    table.sort(out, function(a, b) return a.at < b.at end)
+    return out
+end
+
+-- ----------------------------------------------------------------------------
 -- Debug trace text (pure: built from the collected state and the decision)
 -- ----------------------------------------------------------------------------
 -- What the decision was given: the Main Assist input and the peers considered.
@@ -535,6 +625,9 @@ local failureSeen = { at = nil, spell = nil }
 local cache = { serial = nil, spell = nil, result = nil }
 local traced = { input = nil, pick = nil }
 local castsSeen = {}
+local confirmed = {}      -- castKey -> cast time whose landing message was seen
+local pendingLanding = {} -- castKey -> { mobId, spell, at } waiting for a landing message
+local eventNames = {}
 
 -- Debug trace through TAC's logger (lines only appear while Debug Mode is on).
 -- It never raises: a logging problem must not stop the selector.
@@ -556,6 +649,79 @@ local function traceDecision(state, result)
         traced.pick = pick
         trace('%s: %s', tostring(state.spell), pick)
     end
+end
+
+-- TAC's records of mez casts, with each mob's name (the messages carry only names).
+local function collectMezRecords(rt, mq)
+    local out = {}
+    for mobId, spells in pairs(rt.npcSpellApplied or {}) do
+        local name
+        for spell, expiry in pairs(spells or {}) do
+            local castAt = tonumber(rt.npcSpellLastCast and rt.npcSpellLastCast[mobId] and rt.npcSpellLastCast[mobId][spell])
+            if spellInfo(spell) and tonumber(expiry) and castAt then
+                name = name or tlo(function() return mq.TLO.Spawn(mobId).CleanName() end, '')
+                out[#out + 1] = { mobId = mobId, name = name, spell = spell, castAt = castAt, expiry = tonumber(expiry) }
+            end
+        end
+    end
+    return out
+end
+
+-- "<mob> <landing text>": confirm the cast it belongs to (trace only; nothing else changes).
+local function handleLanded(text, name)
+    if not core then return end
+    local now = os.clock()
+    local r, why = matchLanding(spellsForLanding(text), name, collectMezRecords(core.runtime, core.mq), now, confirmed)
+    if r then
+        confirmed[castKey(r.mobId, r.spell)] = r.castAt
+        trace('landed: %s on #%s "%s" (%.1f s after the cast)', r.spell, tostring(r.mobId), tostring(r.name), now - r.castAt)
+    else
+        trace('landing message for "%s" matched no recent cast (%s)', tostring(name), why)
+    end
+end
+
+-- "<mob> has been awakened by <who>." (spell = nil) or "Your <spell> spell has worn
+-- off of <mob>.": drop the record, so the mob can be mezzed again at once.
+local function handleEnded(name, spell, how)
+    if not core then return end
+    local rt, now = core.runtime, os.clock()
+    local info = spell and spellInfo(spell)
+    if spell and not info then return end          -- worn off: some other spell
+    local mobId, spells = matchEnd(name, info and info.name or nil, collectMezRecords(rt, core.mq), now)
+    if not mobId then
+        if spells == 'ambiguous' then
+            trace('%s "%s": more than one mob has that name, no record changed', how, tostring(name))
+        end
+        return
+    end
+    for _, sp in ipairs(spells) do
+        if rt.npcSpellApplied and rt.npcSpellApplied[mobId] then rt.npcSpellApplied[mobId][sp] = nil end
+        confirmed[castKey(mobId, sp)] = nil
+    end
+    cache = { serial = nil, spell = nil, result = nil }
+    trace('%s "%s": cleared the mez record for #%s (%s)', how, tostring(name), tostring(mobId), table.concat(spells, ', '))
+end
+
+local function registerEvents()
+    local mq = core and core.mq
+    if not (mq and type(mq.event) == 'function') then return end
+    local function add(name, pattern, fn)
+        if type(mq.unevent) == 'function' then pcall(mq.unevent, name) end
+        if pcall(mq.event, name, pattern, function(...) pcall(fn, ...) end) then eventNames[#eventNames + 1] = name end
+    end
+    for i, text in ipairs(landedTexts()) do
+        add('MezSupportLanded' .. i, '#1#' .. text .. '#*#', function(_, name) handleLanded(text, name) end)
+    end
+    add('MezSupportAwakened', '#1# has been awakened by #2#.#*#', function(_, name) handleEnded(name, nil, 'awakened') end)
+    add('MezSupportWornOff', 'Your #1# spell has worn off of #2#.#*#', function(_, spell, name) handleEnded(name, spell, 'worn off') end)
+end
+
+local function unregisterEvents()
+    local mq = core and core.mq
+    if mq and type(mq.unevent) == 'function' then
+        for _, name in ipairs(eventNames) do pcall(mq.unevent, name) end
+    end
+    eventNames = {}
 end
 
 local function remember(result, spellName, now)
@@ -602,9 +768,11 @@ function plugin.onInit(coreApi)
     else
         print('\ar[Triune Mez]\ax this Triune build has no target selector registry; update Triune.')
     end
+    registerEvents()
 end
 
 function plugin.onDestroy()
+    unregisterEvents()
     if core and type(core.unregisterTargetSelector) == 'function' then
         pcall(core.unregisterTargetSelector, SELECTOR_LABEL, plugin.id)
     end
@@ -613,6 +781,7 @@ function plugin.onDestroy()
     cache = { serial = nil, spell = nil, result = nil }
     traced = { input = nil, pick = nil }
     castsSeen = {}
+    confirmed, pendingLanding = {}, {}
 end
 
 -- Each combat tick: notice a failed mez cast and drop the record of the mob it was aimed at.
@@ -621,6 +790,10 @@ function plugin.onCombatTick()
     local rt = core.runtime
     for _, c in ipairs(newMezCasts(rt and rt.npcSpellLastCast, castsSeen)) do
         trace('mez cast recorded: %s on #%s', c.spell, tostring(c.mobId))
+        pendingLanding[castKey(c.mobId, c.spell)] = { mobId = c.mobId, spell = c.spell, at = c.at }
+    end
+    for _, p in ipairs(unconfirmedCasts(pendingLanding, confirmed, rt and rt.npcSpellApplied, os.clock())) do
+        trace('no landing message seen for %s on #%s within %d s of the cast', p.spell, tostring(p.mobId), LANDING_WINDOW_SEC)
     end
     local cleared = clearFailedMez(core.castTracker, rt and rt.npcSpellApplied, rt and rt.npcSpellLastCast, failureSeen)
     if cleared then trace('failed mez cast: cleared the record for #%s', tostring(cleared)) end
@@ -681,6 +854,14 @@ plugin.logic = {
     describeInput  = describeInput,
     describeResult = describeResult,
     newMezCasts    = newMezCasts,
+    landedTexts    = landedTexts,
+    spellsForLanding = spellsForLanding,
+    matchLanding   = matchLanding,
+    matchEnd       = matchEnd,
+    unconfirmedCasts = unconfirmedCasts,
+    collectMezRecords = collectMezRecords,
+    handleLanded   = handleLanded,
+    handleEnded    = handleEnded,
     collectState = collectState,
     resolve      = resolve,
     settings     = cfg,

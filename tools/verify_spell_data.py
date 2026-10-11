@@ -11,6 +11,7 @@ real rows:
     0   spell id                       1   name
     13  cast time in milliseconds      17  buff duration in ticks
     86-97   the 12 effect ids (SPA); 31 is Mesmerize, 254 is "no effect"
+    7   the text printed after the mob's name when the spell lands ("cast on other")
     44-55   the 12 effect base values; for Mesmerize this is the highest mob level it works on
     98  target type: 5 single target, 8 area around the target, 4 area around the caster,
         10 undead only, 11 summoned only
@@ -39,9 +40,11 @@ def table_rows():
         supported = 'supported = true' in rest
         lvl = re.search(r'maxMobLevel = (\d+)', rest)
         cast = re.search(r'castSec = ([\d.]+)', rest)
+        landed = re.search(r"landed = (?:'([^']*)'|\"([^\"]*)\")", rest)
         rows.append({'name': name, 'supported': supported,
                      'maxMobLevel': int(lvl.group(1)) if lvl else None,
-                     'castSec': float(cast.group(1)) if cast else None})
+                     'castSec': float(cast.group(1)) if cast else None,
+                     'landed': (landed.group(1) if landed.group(1) is not None else landed.group(2)) if landed else None})
     return rows
 
 
@@ -102,6 +105,8 @@ def main():
                 problems.append('level cap %s vs file %s' % (r['maxMobLevel'], base))
             if r['castSec'] is None or str(int(round(r['castSec'] * 1000))) != cast:
                 problems.append('cast %s s vs file %s ms' % (r['castSec'], cast))
+            if r['landed'] != s[7]:
+                problems.append('landed text %r vs file %r' % (r['landed'], s[7]))
         else:
             if r['name'] != 'Echoing Madness' and tt not in ('4', '8'):
                 problems.append('refused as an area mez but target type is %s' % tt)

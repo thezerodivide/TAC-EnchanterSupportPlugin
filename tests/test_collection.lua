@@ -15,7 +15,11 @@
             mobs = {}, xt = {}, ignored = {}, unreachable = {}, locked = {}, outOfRange = {},
             xtCalls = 0, logs = {}, registered = nil, unregistered = nil, ctrl = { ma_id = 500, ma_name = 'Tank' } }
         printed = {}
-        local mq = { TLO = {
+        W.events, W.unevented = {}, {}
+        local mq = {
+            event = function(name, pattern, fn) W.events[name] = { pattern = pattern, fn = fn } end,
+            unevent = function(name) W.events[name] = nil; W.unevented[#W.unevented + 1] = name end,
+            TLO = {
             Me = {
                 XTargetSlots = function() W.xtCalls = W.xtCalls + 1; return 13 end,
                 XTarget = function(i)
@@ -300,6 +304,98 @@
     assert_true(W.logs[3]:find('failed mez cast: cleared the record for #7', 1, true), 'trace: a cleared record is logged')
     assert_eq(#L.newMezCasts({ [1] = { Dazzle = 5 } }, {}), 1, 'trace: newMezCasts reports a cast')
     assert_eq(L.describeInput({ ma = { configured = false }, peers = {} }), 'MA not set; peers: none', 'trace: describeInput with no Main Assist')
+
+    -- mez messages -----------------------------------------------------------------------------------------------------------------------
+    newWorld(); plugin = loadPlugin(); plugin.onInit(W.core)
+    local nev = 0
+    for _ in pairs(W.events) do nev = nev + 1 end
+    assert_eq(nev, 11, 'events: 9 landing texts + awakened + worn off are registered')
+    local function eventFor(pattern)
+        for name, e in pairs(W.events) do if e.pattern == pattern then return name, e end end
+    end
+    assert_true(eventFor('#1# swoons in raptured bliss.#*#') ~= nil, 'events: Rapture\'s landing text is listened for')
+    assert_true(eventFor("#1#'s jaw falls as they begin to drool.#*#") ~= nil, 'events: Bliss\'s landing text is listened for')
+    assert_true(eventFor('#1# has been awakened by #2#.#*#') ~= nil and eventFor('Your #1# spell has worn off of #2#.#*#') ~= nil, 'events: awakened and worn off are listened for')
+    local landEv = select(2, eventFor('#1# swoons in raptured bliss.#*#'))
+    local awakeEv = select(2, eventFor('#1# has been awakened by #2#.#*#'))
+    local wornEv = select(2, eventFor('Your #1# spell has worn off of #2#.#*#'))
+
+    addMob(5, { name = 'a Chetari guard' }); addMob(6, { name = 'a Chetari warrior' })
+    W.rt.npcSpellApplied[5] = { Rapture = W.now + 58 }; W.rt.npcSpellLastCast[5] = { Rapture = W.now - 2 }
+    W.logs = {}
+    landEv.fn('A Chetari guard swoons in raptured bliss.', 'A Chetari guard')
+    assert_true(W.logs[1] and W.logs[1]:find('landed: Rapture on #5 "a Chetari guard"', 1, true), 'events: a landing message confirms the cast')
+    W.logs = {}
+    landEv.fn('A Chetari guard swoons in raptured bliss.', 'A Chetari guard')
+    assert_true(W.logs[1] and W.logs[1]:find('matched no recent cast', 1, true), 'events: the same cast is not confirmed twice')
+    W.logs = {}
+    landEv.fn('x', 'A Chetari warrior')
+    assert_true(W.logs[1] and W.logs[1]:find('matched no recent cast', 1, true), 'events: a landing message for a mob we did not mez is noted')
+    assert_true(W.rt.npcSpellApplied[5].Rapture ~= nil, 'events: a landing message changes no record')
+
+    W.logs = {}
+    awakeEv.fn('a Chetari guard has been awakened by Kylaeris.', 'a Chetari guard', 'Kylaeris')
+    assert_nil(W.rt.npcSpellApplied[5].Rapture, 'events: "awakened" drops the record')
+    assert_true(W.logs[1] and W.logs[1]:find('cleared the mez record for #5', 1, true), 'events: ...and says so')
+    W.logs = {}
+    awakeEv.fn('x', 'a Chetari guard', 'Kylaeris')
+    assert_eq(#W.logs, 0, 'events: a second "awakened" for a mob with no record is silent')
+
+    W.rt.npcSpellApplied[5] = { Rapture = W.now + 50 }; W.rt.npcSpellLastCast[5] = { Rapture = W.now - 10 }
+    wornEv.fn('x', 'Grappling Strike', 'a Chetari guard')
+    assert_true(W.rt.npcSpellApplied[5].Rapture ~= nil, 'events: another spell wearing off changes nothing')
+    wornEv.fn('x', 'Sleep', 'a Chetari guard')
+    assert_true(W.rt.npcSpellApplied[5].Rapture ~= nil, 'events: a different mez wearing off leaves this record')
+    wornEv.fn('Your Rapture spell has worn off of a Chetari guard.', 'Rapture', 'a Chetari guard')
+    assert_nil(W.rt.npcSpellApplied[5].Rapture, 'events: "worn off" of the cast spell drops the record')
+
+    -- two same-named mobs: nothing is guessed
+    addMob(7, { name = 'a Chetari guard' })
+    W.rt.npcSpellApplied[5] = { Rapture = W.now + 50 }; W.rt.npcSpellLastCast[5] = { Rapture = W.now - 10 }
+    W.rt.npcSpellApplied[7] = { Rapture = W.now + 50 }; W.rt.npcSpellLastCast[7] = { Rapture = W.now - 12 }
+    W.logs = {}
+    awakeEv.fn('x', 'a Chetari guard', 'Kylaeris')
+    assert_true(W.rt.npcSpellApplied[5].Rapture ~= nil and W.rt.npcSpellApplied[7].Rapture ~= nil, 'events: same-named mobs both mezzed -> no record changed')
+    assert_true(W.logs[1] and W.logs[1]:find('more than one mob has that name', 1, true), 'events: ...and the trace says why')
+
+    -- the cleared record makes the mob eligible again
+    newWorld(); plugin = loadPlugin(); plugin.onInit(W.core)
+    addMob(1); addMob(2, { name = 'a Chetari guard' }); addMob(3, { dist = 99 })
+    W.fed = { id = 1 }
+    W.rt.npcSpellApplied[2] = { Rapture = W.now + 50 }; W.rt.npcSpellLastCast[2] = { Rapture = W.now - 10 }
+    assert_eq(W.registered.resolve(ctx('Rapture')), 3, 'events: a mezzed add is skipped')
+    W.events['MezSupportAwakened'].fn('x', 'a Chetari guard', 'Kylaeris')
+    W.rt.tickSerial = 2
+    assert_eq(W.registered.resolve(ctx('Rapture')), 2, 'events: ...and picked again once it is awakened')
+
+    -- an unconfirmed cast is traced after the window
+    newWorld(); plugin = loadPlugin(); plugin.onInit(W.core)
+    W.rt.npcSpellApplied[7] = { Rapture = W.now + 60 }; W.rt.npcSpellLastCast[7] = { Rapture = W.now }
+    plugin.onCombatTick()
+    W.now = W.now + 5; plugin.onCombatTick()
+    local silent = true
+    for _, l in ipairs(W.logs) do if l:find('no landing message', 1, true) then silent = false end end
+    assert_true(silent, 'events: nothing is said inside the window')
+    W.now = W.now + 10; plugin.onCombatTick()
+    local said = false
+    for _, l in ipairs(W.logs) do if l:find('no landing message seen for Rapture on #7', 1, true) then said = true end end
+    assert_true(said, 'events: an unconfirmed cast is traced once the window passes')
+
+    -- destroy removes every listener
+    plugin.onDestroy()
+    nev = 0
+    for _ in pairs(W.events) do nev = nev + 1 end
+    assert_eq(nev, 0, 'events: onDestroy removes every listener')
+    assert_eq(#W.unevented >= 11, true, 'events: ...by name')
+    plugin.onInit(W.core)
+    nev = 0
+    for _ in pairs(W.events) do nev = nev + 1 end
+    assert_eq(nev, 11, 'events: re-enabling registers them again, once')
+
+    -- a core without an event API still loads
+    newWorld(); plugin = loadPlugin(); W.core.mq.event = nil; W.core.mq.unevent = nil
+    plugin.onInit(W.core); plugin.onDestroy()
+    assert_true(true, 'events: a core without mq.event is harmless')
 
     -- chat reporting ------------------------------------------------------------------------------------------------------------------------
     newWorld(); plugin = loadPlugin(); plugin.onInit(W.core)

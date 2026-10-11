@@ -52,7 +52,7 @@ to your current target).
 
 - A piloted off-tank holding an undamaged add is invisible to the plugin (damaged-add protection is the only cover).
 - If the Main Assist switches to an add while the mez is mid-cast, the mez still lands.
-- Mez state is presumed from TAC's cast records, not read from the mob; a mez that breaks early with no detectable event stays "active" until the refresh window.
+- Mez state is presumed from TAC's cast records, not read from the mob. The game's "awakened" and "worn off" messages drop a record early, but they carry only the mob's name: with two same-named mezzed mobs nothing is dropped, and the mez stays "active" until the refresh window.
 - With damaged-add protection on, an add that took damage stays excluded even after its mez would have expired.
 
 ## Development

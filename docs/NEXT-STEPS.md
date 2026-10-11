@@ -20,6 +20,13 @@
 4. Write CHANGELOG/README for the TAC-side PR and choose a license.
 5. **PRs (only when the owner asks):** first the registry to `gennro/TriuneAutocombat` (from the owner's fork, as a draft so CI runs first); the plugin stays in this repo.
 
+## Mez messages: built, partly unverified
+
+Seen in a real EverQuest log (2026-10-11, Rapture): `<mob> swoons in raptured bliss.` about 2 s after the cast begins, `<mob> has been awakened by <who>.` and `Your Rapture spell has worn off of <mob>.`.
+The landing texts of the other eleven spells come from `spells_us.txt` and have not been seen in game. Built: an awakened or worn-off message drops the mez record; a landing message only confirms the cast in the
+debug trace, and a cast with no landing message within 8 s (`LANDING_WINDOW_SEC`, a guess) is traced. **Not built, to decide after more tests:** clearing the record and retrying when no landing message arrives,
+and a retry limit. Matching is by mob name; two same-named mobs both recently mezzed make a message ambiguous and nothing is changed.
+
 ## Unverified (the test should settle these)
 
 | Item | What to watch |
@@ -29,6 +36,9 @@
 | The pending window (cast time + 0.5 s) | an add re-mezzed during its own cast means it is too short |
 | Mesmerize's duration (4 ticks in the spell file vs 12 s in the server's list) | the cap is conservative (12 s); confirm which is real |
 | Whether 3 s (`BOXNET_FRESH_SEC`) makes peer heartbeats flap | statuses alternating between candidate and waiting |
+| The eleven landing texts not yet seen (Mesmerize, Enthrall, Entrance, Dazzle, Glamour of Kintaz, Ancient: Eternal Rapture, Apathy, Sleep, Bliss, Felicity, Euphoria) | `landed:` lines in the trace; "no landing message seen" lines |
+| Whether the Main Assist's area attacks keep waking mezzed adds (both wakes seen so far were "by" the Main Assist) | "awakened" lines and what the Main Assist hit at the time |
+| Picks with no line of sight (a mob 190 away was picked and the cast failed with "You cannot see your target") | failed-cast lines; no line-of-sight rule exists |
 | Whether `recordSuccess`/failure flags behave for an Enchanter's casts as read in the code | a failed cast ("cannot see target") should drop its record |
 | Enchanter in a four-class gestalt build (the owner's server) | the plugin only checks the *spell*, not the class, so it should work; confirm |
 
@@ -36,7 +46,7 @@
 
 - A piloted off-tank holding an undamaged add is invisible (damaged-add protection is the only cover).
 - If the Main Assist switches to an add while the mez is mid-cast, the mez still lands. Cancelling mid-cast is possible later if logs show it matters.
-- Mez state is presumed; an early break with no detectable event stays "active" until the renew window.
+- Mez state is still presumed. An early break is now caught by the "awakened" and "worn off" messages when the name match is unambiguous; with two same-named mezzed mobs it stays "active" until the renew window.
 - With "Skip damaged adds" on, an add that took damage stays excluded even after its mez expired (turn the setting off for damage-over-time groups).
 - Single-target Enchanter mezzes only; no area mezzes, no Echoing Madness, no Bard/Necromancer/Mage mezzes.
 
@@ -45,7 +55,7 @@
 - **Standalone mode (no registry).** Give the plugin its own settings window and let it cast through TAC's gem machinery (`runtime.castGem`) so it works on stock upstream TAC. Real extra work; also would compete with the core gem loop for priority
   (the plugin's hook runs after the core loop each pass, so a busy gem loop could starve it). Only worth it if the registry is not accepted upstream.
 - **Reading the mob's real buffs** when it is the current target and the client has them (`Target.Buff(i)`, the same calls TAC already uses for target buffs). Only helps the targeted mob; would refine the presumed state.
-- **An "awakened" handler**, once a real log shows the message text on this server.
+- **Landing-based verification and retry** (clear the record and retry when no landing message arrives): needs the other eleven texts seen first. A target hold and buff read was considered and not needed for this; it would also need the engine to stop auto-attacking the held target.
 - **Ranking by who the add is attacking**, if the aggro data turns out reliable.
 - **Off-tank awareness**, e.g. a configurable second protected character.
 - **A `/ac mez` status command.**

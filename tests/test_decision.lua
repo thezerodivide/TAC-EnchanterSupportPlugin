@@ -45,6 +45,7 @@
             supported = supported + 1
             assert_type(sp.maxMobLevel, 'number', 'mez data: level cap for ' .. sp.name)
             assert_eq(sp.castSec, 2.5, 'mez data: cast time for ' .. sp.name)
+            assert_true(type(sp.landed) == 'string' and #sp.landed > 5, 'mez data: landing text for ' .. sp.name)
         else
             unsupported = unsupported + 1
             assert_type(sp.reason, 'string', 'mez data: reason for refusing ' .. sp.name)
@@ -58,6 +59,43 @@
     assert_eq(L.spellInfo('glamour of kintaz').name, 'Glamour of Kintaz', 'mez data: case is ignored')
     assert_nil(L.spellInfo('Kelin\'s Lucid Lullaby'), 'mez data: a Bard song is not an Enchanter mez here')
     assert_nil(L.spellInfo(nil), 'mez data: nil spell')
+
+    -- mez messages (pure matching) -----------------------------------------------------
+    assert_eq(#L.landedTexts(), 9, 'msg: 12 supported spells print 9 distinct landing texts')
+    local rap = L.spellsForLanding(' swoons in raptured bliss.')
+    assert_true(rap['Rapture'] and rap['Ancient: Eternal Rapture'] and not rap['Sleep'], 'msg: Rapture and Ancient: Eternal Rapture share a text, Sleep does not')
+    local recs = {
+        { mobId = 1, name = 'a Chetari guard', spell = 'Rapture', castAt = 100, expiry = 160 },
+        { mobId = 2, name = 'a Chetari warrior', spell = 'Rapture', castAt = 100, expiry = 160 },
+    }
+    local m = L.matchLanding(rap, 'A Chetari guard', recs, 102, {})
+    assert_eq(m and m.mobId, 1, 'msg: a landing message matches the cast by name, ignoring case')
+    local none, why = L.matchLanding(rap, 'A Chetari guard', recs, 120, {})
+    assert_true(none == nil and why == 'none', 'msg: a landing message long after the cast matches nothing')
+    none, why = L.matchLanding(L.spellsForLanding(' falls asleep.'), 'A Chetari guard', recs, 102, {})
+    assert_true(none == nil and why == 'none', 'msg: the text of a different spell matches nothing')
+    none, why = L.matchLanding(rap, 'A Chetari guard', recs, 102, { ['1:Rapture'] = 100 })
+    assert_true(none == nil and why == 'none', 'msg: a cast already confirmed is not confirmed twice')
+    recs[3] = { mobId = 3, name = 'a chetari guard', spell = 'Rapture', castAt = 101, expiry = 161 }
+    none, why = L.matchLanding(rap, 'A Chetari guard', recs, 102, {})
+    assert_true(none == nil and why == 'ambiguous', 'msg: two recent casts on same-named mobs are ambiguous')
+    local id, spells = L.matchEnd('a Chetari warrior', nil, recs, 110)
+    assert_eq(id, 2, 'msg: an ended mez matches the mob by name')
+    assert_eq(spells[1], 'Rapture', 'msg: ...and lists the spell to drop')
+    id, spells = L.matchEnd('A Chetari guard', nil, recs, 110)
+    assert_true(id == nil and spells == 'ambiguous', 'msg: same-named mobs both mezzed -> ambiguous')
+    id, spells = L.matchEnd('a Chetari warrior', 'Sleep', recs, 110)
+    assert_true(id == nil and spells == 'none', 'msg: worn off of another spell matches nothing')
+    id, spells = L.matchEnd('a Chetari warrior', nil, recs, 200)
+    assert_true(id == nil and spells == 'none', 'msg: a record already past its expiry is not matched')
+    local pend = { ['1:Rapture'] = { mobId = 1, spell = 'Rapture', at = 100 }, ['2:Rapture'] = { mobId = 2, spell = 'Rapture', at = 100 },
+        ['3:Rapture'] = { mobId = 3, spell = 'Rapture', at = 100 }, ['4:Rapture'] = { mobId = 4, spell = 'Rapture', at = 108 } }
+    local applied = { [1] = { Rapture = 160 }, [2] = { Rapture = 160 } }   -- 3 was cleared by a failed cast
+    local un = L.unconfirmedCasts(pend, { ['2:Rapture'] = 100 }, applied, 110)
+    assert_eq(#un, 1, 'msg: only an unconfirmed, still-recorded cast past the window is reported')
+    assert_eq(un[1].mobId, 1, 'msg: ...the right one')
+    assert_nil(pend['1:Rapture'], 'msg: reported entries are dropped')
+    assert_true(pend['4:Rapture'] ~= nil, 'msg: a cast still inside the window keeps waiting')
 
     -- 1. unsupported spells --------------------------------------------------
     for _, name in ipairs({ 'Mesmerization', 'Fascination', 'Bliss of the Nihil', 'Wake of Felicity',
