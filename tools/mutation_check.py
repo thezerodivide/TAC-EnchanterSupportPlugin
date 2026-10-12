@@ -25,7 +25,8 @@ MUTATIONS = [
     ('refresh boundary > becomes >=', "> refreshAt then", ">= refreshAt then"),
     ('stale peers still protect their target', "if p.fresh == true and p.engaged == true", "if p.engaged == true"),
     ('an unknown Main Assist target is trusted', "ma.status ~= 'target' or maId <= 0", "maId <= 0"),
-    ('nearest becomes farthest', "d < bestDist or", "d > bestDist or"),
+    ('farthest becomes nearest', "d > bestDist or", "d < bestDist or"),
+    ('an unknown distance ranks first', "local d = tonumber(m.dist) or -1", "local d = tonumber(m.dist) or math.huge"),
     # collection and tracking
     ('listed duration no longer caps a record', "remaining = math.min(remaining, last + info.durationSec - now)", "remaining = remaining"),
     ('a fresh cast is never pending', "local pending = last ~= nil and (now - last) < ((info.castSec or 2.5) + 0.5)", "local pending = false"),

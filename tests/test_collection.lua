@@ -69,7 +69,7 @@
         return W
     end
     local function addMob(id, over)
-        local m = { name = 'mob' .. id, level = 50, dist = id * 10, hp = 100, type = 'NPC', hostile = true }
+        local m = { name = 'mob' .. id, level = 50, dist = 200 - id * 10, hp = 100, type = 'NPC', hostile = true }
         for k, v in pairs(over or {}) do m[k] = v end
         W.mobs[id] = m
         W.xt[#W.xt + 1] = id
@@ -268,7 +268,7 @@
     W.bn = { peersInZone = function() return { { name = 'Cleric', hb = { target = { id = 3, engaged = true } } } } end }
     W.registered.resolve(ctx())
     assert_eq(#W.logs, 3, 'trace: the first pick logs the input, the pick and the Extended Target')
-    assert_true(W.logs[3]:find('xtarget: 1:#1 mob1 100% d10 | 2:#2 mob2 100% d30 | 3:#3 mob3 50% d30', 1, true), 'trace: the Extended Target line lists slot, id, name, hp and distance')
+    assert_true(W.logs[3]:find('xtarget: 1:#1 mob1 100% d190 | 2:#2 mob2 100% d30 | 3:#3 mob3 50% d170', 1, true), 'trace: the Extended Target line lists slot, id, name, hp and distance')
     assert_true(W.logs[1]:find('MA target #1 (Box Network feed); peers: Cleric>#3 engaged', 1, true), 'trace: the input names the MA target, its source and the peers')
     assert_true(W.logs[2]:find('pick #2 "mob2" dist 30', 1, true), 'trace: the pick names the mob and distance')
     assert_true(W.logs[2]:find('1 Main Assist target', 1, true) and W.logs[2]:find('1 fought by another box', 1, true), 'trace: ...and what was skipped')

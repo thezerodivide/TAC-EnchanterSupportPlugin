@@ -37,7 +37,9 @@
 --        already damaged (HP below 100%, switchable); ignored / unreachable /
 --        locked-out / out-of-range mobs; mobs above the spell's level cap;
 --        mobs the tracker says are mezzed, unless the mez is about to run out.
---   4. The nearest remaining mob wins (ties go to the lowest spawn id).
+--   4. The FARTHEST remaining mob from the Enchanter wins (ties go to the lowest spawn id; an unknown
+--      distance ranks last). An experiment: the tank's TAC takes the mob nearest to HIM next (its aggro
+--      switch), and the Enchanter stands near him, so the farthest add is the one he reaches last.
 --
 -- Mez state is presumed, not observed. TAC records every duration spell it
 -- casts (runtime.npcSpellApplied, with the cast time in npcSpellLastCast) and
@@ -218,8 +220,8 @@ local function decide(state)
         elseif mezState == 'active' and (tonumber(mez.remaining) or 0) > refreshAt then
             skip('mezzed')
         else
-            local d = tonumber(m.dist) or math.huge
-            if not best or d < bestDist or (d == bestDist and id < best.id) then
+            local d = tonumber(m.dist) or -1
+            if not best or d > bestDist or (d == bestDist and id < best.id) then
                 best, bestDist = { id = id, name = m.name }, d
             end
         end
@@ -862,7 +864,7 @@ local function resolve(ctx)
     return result.id
 end
 
-local HELP = 'Mez: the nearest add that no one in the group is fighting. Never the Main Assist\'s target, '
+local HELP = 'Mez: the farthest add that no one in the group is fighting. Never the Main Assist\'s target, '
     .. 'never a mob another box is engaged with, never an already mezzed or (optionally) damaged add. '
     .. 'Needs a Main Assist; refuses area mezzes. Set the gem\'s When to "in combat".'
 

@@ -58,14 +58,17 @@ So the authority on "what is being fought" is the **group's**, not the Enchanter
 | Mez pending, or active with more than cast time + 2 s left | excluded |
 | Mez active with cast time + 2 s or less left | eligible (renew) |
 | Nothing qualifies | `no_eligible` (with counts of what was skipped and why) |
-| Otherwise | nearest candidate; ties go to the lowest spawn id |
+| Otherwise | **farthest** candidate from the Enchanter (an experiment, see below); ties go to the lowest spawn id; an unknown distance ranks last |
 
 Order of the early checks: unsupported spell, then MA not set, then MA no target, then MA unavailable. Statuses are distinct on purpose: an inactive plugin must
 be able to explain itself.
 
-### Why nearest-first
-A deterministic, easy-to-verify heuristic. Ranking by who each add is attacking may be better, but it is not established that the aggro data is reliable enough. This is an
-intentional first choice, not a claim that it is optimal crowd control.
+### Why farthest-first (an experiment; nearest-first was the first choice)
+The first choice was nearest-first: deterministic and easy to verify. In game (2026-10-11) the mezzed add was very often the one the tank took next, so the mez was wasted. The tank's own TAC explains it:
+`runtime.checkAggroSwitch` (runs every combat pass, `triune.lua:22499`) takes the **nearest** hostile on Extended Target, measured from the tank, when his target is missing or dead, or when a mob is hitting him
+and his current target is not. The Enchanter follows the tank, so nearest-to-the-Enchanter is nearly nearest-to-the-tank. Ranking by who each add is attacking was not tried (not established that the aggro data is reliable).
+Farthest-from-the-Enchanter is the simple opposite: the add the tank reaches last. It is a heuristic, not a guarantee. It also favours distant adds, which more often have no line of sight (see `docs/NEXT-STEPS.md`).
+The `tank prediction` trace (lowest HP, first slot) was written before this was found and does not model the aggro switch.
 
 ### Why fail closed on the MA, tolerant on peers
 Peer heartbeats only exist for the owner's *other TAC characters on the same computer, in the same zone*. A piloted character, a box on another PC, or a character not running

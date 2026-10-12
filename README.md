@@ -13,8 +13,8 @@ It mezzes the same mob over and over and never the adds.
 
 ## What this does
 
-It adds a new target, **`E: Mez Target`**, to TAC's Target dropdowns. For a mez spell you give that target, it chooses the **nearest add that
-nobody in the group is fighting**:
+It adds a new target, **`E: Mez Target`**, to TAC's Target dropdowns. For a mez spell you give that target, it chooses the **farthest add (from the Enchanter) that
+nobody in the group is fighting**, because the tank's TAC takes the mob nearest to *him* next (an experiment; see `docs/DESIGN.md`):
 
 - never the **Main Assist's target** (the Enchanter must run in Assist mode with a Main Assist set),
 - never a mob **another box is engaged with** (from the other characters' Box Network heartbeats),

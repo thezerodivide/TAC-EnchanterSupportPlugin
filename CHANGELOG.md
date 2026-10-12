@@ -14,6 +14,8 @@
 - **Tank prediction trace (trace only; the pick is unchanged).** The trace now lists the Extended Target (slot, id, name, HP%, distance) whenever the pick changes, names the Main Assist's mode and submode from his
   heartbeat, and, each time his target changes, logs what TAC's "next target" rule (lowest HP%, first slot on a tie) expected against what he took (`MATCH` or `MISS`). The prediction ignores his ignore lists and distance cap and
   uses this character's slot order; the point is to check those assumptions in game before any ranking is built on them.
+- **Experiment: farthest-first.** The pick is now the add farthest from the Enchanter (ties: lowest spawn id; unknown distance last), not the nearest. In game the mezzed add was often the tank's next target; his TAC takes the nearest mob to him
+  (`runtime.checkAggroSwitch`), and the Enchanter stands near him. Expect more "cannot see your target" failures at long range. Easy to revert (`decide()`, one comparison).
 - Standalone test runner (`tests/run.lua`), a spell-data checker (`tools/verify_spell_data.py`) and a rule-mutation checker (`tools/mutation_check.py`).
 
 History: the plugin began as part of the `wip/mez-support` branch of `thezerodivide/TriuneAutocombat-4Class` (0.1.0 was the decision logic only; 0.2.0 added state collection, tracking, the selector and the settings panel).

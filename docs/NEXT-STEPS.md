@@ -27,7 +27,10 @@ The landing texts of the other eleven spells come from `spells_us.txt` and have 
 debug trace, and a cast with no landing message within 8 s (`LANDING_WINDOW_SEC`, a guess) is traced. **Not built, to decide after more tests:** clearing the record and retrying when no landing message arrives,
 and a retry limit. Matching is by mob name; two same-named mobs both recently mezzed make a message ambiguous and nothing is changed.
 
-## Tank prediction: trace built, ranking not built
+## Farthest-first (built as an experiment) and the tank prediction trace
+
+The pick is now the **farthest** add from the Enchanter (see `docs/DESIGN.md`). Judge it from the logs: how many landed mezzes were woken within a few seconds (baseline before the change, 2026-10-11 and 12: 30 mezzes landed; of the 22 whose wake was matched to a mob, 14 were woken within 3 s; same-name wakes and mobs killed while mezzed are not in that count), and how many casts failed with "cannot see your target"
+(distant adds make that likelier). The text below describes the earlier plan and is partly superseded: the tank's rule is the aggro switch (nearest to him), not lowest HP.
 
 Observation in game (2026-10-11): in fast fights the mezzed add is often the tank's next target within a second or two, so the mez is wasted. Kylaeris's saved loadout is Puller/Hunt; in Hunt, Manual and Puller Camp TAC picks the next target with
 `runtime.findFirstNPCXtarget`: lowest HP%, first Extended Target slot on a tie. Agreed idea: mez the opposite (the add the tank would reach last). Built so far: only the `tank prediction` trace (`MATCH`/`MISS` per change of the tank's target)

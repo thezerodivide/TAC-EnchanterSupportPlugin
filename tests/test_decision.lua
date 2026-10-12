@@ -14,7 +14,7 @@
 
     -- builders -------------------------------------------------------------
     local function mob(id, over)
-        local m = { id = id, name = 'mob' .. id, level = 50, dist = 10 * id, hpPct = 100,
+        local m = { id = id, name = 'mob' .. id, level = 50, dist = 200 - 10 * id, hpPct = 100,
             hostile = true, isNpc = true, ignored = false, unreachable = false,
             lockedOut = false, inRange = true, mez = { state = 'none' } }
         for k, v in pairs(over or {}) do
@@ -208,7 +208,7 @@
 
     -- 9. choosing among candidates ---------------------------------------------------------------------------------
     local far = state({ mobs = { mob(1), mob(5, { dist = 90 }), mob(4, { dist = 30 }), mob(9, { dist = 60 }) } })
-    assert_eq(L.decide(far).id, 4, 'choice: the nearest candidate wins')
+    assert_eq(L.decide(far).id, 5, 'choice: the farthest candidate wins')
     assert_eq(L.decide(state({ mobs = { mob(1), mob(7, { dist = 20 }), mob(3, { dist = 20 }) } })).id, 3, 'choice: equal distance goes to the lowest id')
     assert_eq(L.decide(state({ mobs = { mob(1), mob(7, { __nil = { 'dist' } }), mob(3, { dist = 80 }) } })).id, 3, 'choice: an unknown distance sorts last')
     assert_eq(L.decide(state({ mobs = { mob(1), mob(7, { __nil = { 'dist' } }) } })).id, 7, 'choice: ...but is still chosen when it is the only one')
@@ -225,15 +225,19 @@
     local combo2 = deepcopy(combo)
     combo2.mobs[#combo2.mobs + 1] = mob(4, { dist = 120 })
     assert_eq(L.decide(combo2).id, 4, 'combo: the one clean add is picked however far it is')
-    -- turn protection off: the nearest of the remaining wins (the damaged add)
+    -- turn protection off: the damaged add is a candidate again (the only one without the far clean add)
+    local combo2off = deepcopy(combo)
+    combo2off.settings = { damagedProtection = false }
+    assert_eq(L.decide(combo2off).id, 2, 'combo: protection off -> the damaged add is allowed again')
     combo2.settings = { damagedProtection = false }
-    assert_eq(L.decide(combo2).id, 2, 'combo: protection off -> the damaged add is allowed again')
+    assert_eq(L.decide(combo2).id, 4, 'combo: protection off, the farthest of the remaining wins')
     -- the same board with the mezzed add due for a refresh
     local combo3 = deepcopy(combo2)
     combo3.settings = {}
     combo3.mobs[3].mez.remaining = 3
-    assert_eq(L.decide(combo3).id, 3, 'combo: a mezzed add due for a refresh beats a farther clean add')
-    -- peers fighting the nearest clean add push the choice farther out
+    combo3.mobs[3].dist = 150
+    assert_eq(L.decide(combo3).id, 3, 'combo: a mezzed add due for a refresh is a candidate again (here the farthest)')
+    -- peers fighting the farthest clean add push the choice nearer
     combo3.peers = { { fresh = true, id = 3, engaged = true } }
     assert_eq(L.decide(combo3).id, 4, 'combo: ...unless another box is fighting it')
     -- a stale peer entry does not
