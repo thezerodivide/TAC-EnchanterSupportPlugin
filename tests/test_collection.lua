@@ -267,13 +267,14 @@
     W.fed = { id = 1 }
     W.bn = { peersInZone = function() return { { name = 'Cleric', hb = { target = { id = 3, engaged = true } } } } end }
     W.registered.resolve(ctx())
-    assert_eq(#W.logs, 2, 'trace: the first pick logs the input and the pick')
+    assert_eq(#W.logs, 3, 'trace: the first pick logs the input, the pick and the Extended Target')
+    assert_true(W.logs[3]:find('xtarget: 1:#1 mob1 100% d10 | 2:#2 mob2 100% d30 | 3:#3 mob3 50% d30', 1, true), 'trace: the Extended Target line lists slot, id, name, hp and distance')
     assert_true(W.logs[1]:find('MA target #1 (Box Network feed); peers: Cleric>#3 engaged', 1, true), 'trace: the input names the MA target, its source and the peers')
     assert_true(W.logs[2]:find('pick #2 "mob2" dist 30', 1, true), 'trace: the pick names the mob and distance')
     assert_true(W.logs[2]:find('1 Main Assist target', 1, true) and W.logs[2]:find('1 fought by another box', 1, true), 'trace: ...and what was skipped')
     W.rt.tickSerial = 2
     W.registered.resolve(ctx())
-    assert_eq(#W.logs, 2, 'trace: an unchanged input and pick log nothing')
+    assert_eq(#W.logs, 3, 'trace: an unchanged input and pick log nothing')
     W.fed = nil; W.assist = 1
     W.rt.tickSerial = 3
     W.registered.resolve(ctx())
@@ -281,14 +282,62 @@
     W.fed = false
     W.rt.tickSerial = 4
     W.registered.resolve(ctx())
-    assert_true(W.logs[#W.logs - 1]:find('MA no target', 1, true), 'trace: a no-target Main Assist is logged')
-    assert_true(W.logs[#W.logs]:find('Waiting: Main Assist has no target', 1, true), 'trace: ...with the status as the pick')
+    assert_true(W.logs[#W.logs - 2]:find('MA no target', 1, true), 'trace: a no-target Main Assist is logged')
+    assert_true(W.logs[#W.logs - 1]:find('Waiting: Main Assist has no target', 1, true), 'trace: ...with the status as the pick')
     W.core.log = nil
     W.rt.tickSerial = 5; W.fed = { id = 1 }
     assert_eq(W.registered.resolve(ctx()), 2, 'trace: a core without a logger still selects')
     W.core.log = { debug = function() error('boom') end }
     W.rt.tickSerial = 6; W.fed = { id = 3 }
     assert_true(W.registered.resolve(ctx()) ~= nil, 'trace: a logger that raises does not stop the selector')
+    -- the tank's mode and the prediction of his next target
+    newWorld(); plugin = loadPlugin(); plugin.onInit(W.core)
+    addMob(1); addMob(2, { hp = 60 }); addMob(3, { hp = 60 }); addMob(4)
+    W.bn = { peersInZone = function() return { { name = 'tank', hb = { mode = 'Puller', submode = 'Hunt', target = { id = 1, engaged = true } } } } end }
+    local tick = 0
+    local function again() tick = tick + 1; W.rt.tickSerial = tick; return W.registered.resolve(ctx()) end
+    local function lastLine(find)
+        for i = #W.logs, 1, -1 do if W.logs[i]:find(find, 1, true) then return W.logs[i] end end
+    end
+    W.fed = { id = 1 }; again()
+    assert_true(W.logs[1]:find('MA mode Puller/Hunt', 1, true), 'predict: the input names the Main Assist\'s mode from his heartbeat (name compared ignoring case)')
+    assert_nil(lastLine('tank prediction'), 'predict: nothing is compared at the first target')
+    W.fed = false; again()
+    W.fed = { id = 2 }; again()
+    local line = lastLine('tank prediction')
+    assert_true(line and line:find('expected #2 "mob2" (slot 2, hp 60%), took #2 "mob2" (slot 2, hp 60%): MATCH', 1, true), 'predict: lowest HP, first slot on a tie -> MATCH when he takes it')
+    assert_true(line and line:find('(MA mode Puller/Hunt)', 1, true), 'predict: ...with his mode in the line')
+    assert_true(line and line:find('list when predicted: 1:#1 mob1', 1, true), 'predict: ...and the list the prediction was made from')
+    W.mobs[3].hp = 10
+    W.fed = false; again()
+    W.fed = { id = 4 }; again()
+    line = lastLine('MISS')
+    assert_true(line and line:find('expected #3 "mob3" (slot 3, hp 10%), took #4 "mob4" (slot 4, hp 100%): MISS', 1, true), 'predict: a different target -> MISS with both mobs described')
+    local before = #W.logs
+    W.fed = false; again()
+    W.fed = { id = 4 }; again()
+    assert_eq(lastLine('tank prediction') == line, true, 'predict: the same target again (a feed flap) is not compared twice')
+    W.fed = false; again()
+    W.now = W.now + 30
+    W.fed = { id = 2 }; again()
+    assert_eq(lastLine('tank prediction') == line, true, 'predict: a prediction older than 10 s is not compared')
+    -- slot order, not distance or id
+    local mobs = {
+        { id = 9, slot = 3, hostile = true, isNpc = true, hpPct = 40, dist = 5 },
+        { id = 1, slot = 5, hostile = true, isNpc = true, hpPct = 40, dist = 1 },
+        { id = 4, slot = 2, hostile = true, isNpc = true, hpPct = 40, dist = 99 },
+        { id = 7, slot = 1, hostile = true, isNpc = true, hpPct = 90, dist = 2 },
+    }
+    assert_eq(L.predictTankNext(mobs).id, 4, 'predict: lowest HP, then the lowest slot (not the nearest, not the lowest id)')
+    assert_eq(L.predictTankNext(mobs, 4).id, 9, 'predict: the tank\'s current target is excluded')
+    mobs[3].hostile = false
+    assert_eq(L.predictTankNext(mobs).id, 9, 'predict: a non-hostile mob is not considered')
+    assert_nil(L.predictTankNext({}), 'predict: nothing on Extended Target -> no prediction')
+    assert_eq(L.predictTankNext({ { id = 3, slot = 2, hostile = true, isNpc = true }, { id = 2, slot = 1, hostile = true, isNpc = true, hpPct = 100 } }).id, 2,
+        'predict: an unknown HP counts as 100 and the first slot wins')
+    assert_eq(L.describeXtarget({}), 'empty', 'predict: an empty Extended Target is described')
+    assert_nil(L.findMaPeer({ { name = 'Other' } }, 'Tank'), 'predict: no heartbeat from the Main Assist -> no mode')
+
     -- mez casts and failures
     newWorld(); plugin = loadPlugin(); plugin.onInit(W.core)
     W.rt.npcSpellLastCast[7] = { ['Dazzle'] = 990, ['Fireball'] = 991 }

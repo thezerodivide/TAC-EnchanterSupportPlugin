@@ -442,7 +442,83 @@ local function describeInput(state)
     for _, p in ipairs(state and state.peers or {}) do
         peers[#peers + 1] = string.format('%s>#%s%s', tostring(p.name or '?'), tostring(p.id or 0), p.engaged and ' engaged' or '')
     end
-    return string.format('%s; peers: %s', maText, #peers > 0 and table.concat(peers, ', ') or 'none')
+    local text = string.format('%s; peers: %s', maText, #peers > 0 and table.concat(peers, ', ') or 'none')
+    if ma.configured then
+        text = text .. '; MA mode ' .. (ma.mode and ma.mode ~= '' and (ma.mode .. ((ma.submode and ma.submode ~= '') and ('/' .. ma.submode) or '')) or 'unknown')
+    end
+    return text
+end
+
+-- The tank's mode, from his heartbeat: the peer whose name is the Main Assist's.
+local function findMaPeer(peers, maName)
+    for _, p in ipairs(peers or {}) do
+        if maName and maName ~= '' and p.name and tostring(p.name):lower() == tostring(maName):lower() then return p end
+    end
+    return nil
+end
+
+-- ----------------------------------------------------------------------------
+-- Tank prediction (trace only; nothing here changes what the plugin picks)
+-- ----------------------------------------------------------------------------
+-- TAC's own finder for "the next target" (runtime.findFirstNPCXtarget, used by Hunt, Manual
+-- and Puller Camp) walks the Extended Target slots in order and keeps the hostile with the
+-- LOWEST HP%; the comparison is strict, so on equal HP the first slot wins. This mirrors
+-- that, WITHOUT the tank's own ignore/unreachable lists or his distance cap (not visible
+-- from here), and on THIS character's slot order (it is not known to equal the tank's).
+local PREDICTION_MAX_AGE_SEC = 10   -- a prediction older than this is not compared (a guess)
+
+local function bySlot(mobs)
+    local list = {}
+    for _, m in ipairs(mobs or {}) do list[#list + 1] = m end
+    table.sort(list, function(a, b)
+        local sa, sb = tonumber(a.slot) or 999, tonumber(b.slot) or 999
+        if sa ~= sb then return sa < sb end
+        return (tonumber(a.id) or 0) < (tonumber(b.id) or 0)
+    end)
+    return list
+end
+
+local function predictTankNext(mobs, excludeId)
+    local best, lowest = nil, 101
+    for _, m in ipairs(bySlot(mobs)) do
+        if m.hostile == true and m.isNpc == true and (tonumber(m.id) or 0) > 0 and m.id ~= excludeId then
+            local hp = tonumber(m.hpPct) or 100
+            if hp < lowest then lowest, best = hp, m end
+        end
+    end
+    return best
+end
+
+local function describeMob(m)
+    return string.format('#%s "%s" (slot %s, hp %s%%)', tostring(m.id), tostring(m.name or '?'), tostring(m.slot or '?'),
+        tostring(m.hpPct or '?'))
+end
+
+-- "1:#12 a wraith 100% d17 | 2:..." in slot order.
+local function describeXtarget(mobs)
+    local parts = {}
+    for _, m in ipairs(bySlot(mobs)) do
+        parts[#parts + 1] = string.format('%s:#%s %s %s%% d%s', tostring(m.slot or '?'), tostring(m.id), tostring(m.name or '?'),
+            tostring(m.hpPct or '?'), m.dist and string.format('%.0f', m.dist) or '?')
+    end
+    return #parts > 0 and table.concat(parts, ' | ') or 'empty'
+end
+
+local function makePrediction(mobs, excludeId, now)
+    local m = predictTankNext(mobs, excludeId)
+    if not m then return nil end
+    return { id = m.id, name = m.name, slot = m.slot, hp = m.hpPct, at = now, list = describeXtarget(mobs) }
+end
+
+-- The line logged when the tank's target changes to `actualId`: what the rule expected, what he took.
+local function describePrediction(pred, actualId, mobs, mode)
+    local actual
+    for _, m in ipairs(mobs or {}) do if m.id == actualId then actual = m end end
+    local took = actual and describeMob(actual) or ('#' .. tostring(actualId) .. ' (not on this Extended Target)')
+    return string.format('tank prediction (MA mode %s): expected %s, took %s: %s; list when predicted: %s',
+        (mode and mode ~= '') and mode or 'unknown',
+        string.format('#%s "%s" (slot %s, hp %s%%)', tostring(pred.id), tostring(pred.name or '?'), tostring(pred.slot or '?'), tostring(pred.hp or '?')),
+        took, (pred.id == actualId) and 'MATCH' or 'MISS', tostring(pred.list))
 end
 
 -- What the decision chose, and what it skipped and why.
@@ -557,7 +633,7 @@ local function collectPeers(rt)
         local t = hb.target
         local isT = type(t) == 'table'
         peers[#peers + 1] = { fresh = true, id = isT and tonumber(t.id) or 0, engaged = isT and t.engaged == true,
-            name = p.name }
+            name = p.name, mode = hb.mode, submode = hb.submode }
     end
     return peers
 end
@@ -586,6 +662,7 @@ local function collectMobs(rt, mq, spellName, kind, tracker, now)
                 local lastCast = rt.npcSpellLastCast and rt.npcSpellLastCast[id]
                 mobs[#mobs + 1] = {
                     id        = id,
+                    slot      = i,
                     name      = name,
                     level     = tonumber(tlo(function() return s.Level() end, 0)) or 0,
                     dist      = tonumber(tlo(function() return s.Distance3D() or s.Distance() end, nil)),
@@ -607,11 +684,19 @@ end
 -- One snapshot of everything decide() needs. `coreApi` is the TAC core API.
 local function collectState(coreApi, spellName, entry, now)
     local rt, ctrl, mq = coreApi.runtime, coreApi.ctrl, coreApi.mq
+    local ma, peers = collectMainAssist(rt, ctrl, mq), collectPeers(rt)
+    local maName = ctrl and ctrl.ma_name
+    if (not maName or maName == '') and ma.configured then
+        local id = tlo(function() return rt.maPcId() end, nil)
+        if id then maName = tlo(function() return mq.TLO.Spawn(id).CleanName() end, nil) end
+    end
+    local maPeer = findMaPeer(peers, maName)
+    if maPeer then ma.mode, ma.submode = maPeer.mode, maPeer.submode end
     return {
         spell    = spellName,
         settings = { damagedProtection = cfg.damagedProtection },
-        ma       = collectMainAssist(rt, ctrl, mq),
-        peers    = collectPeers(rt),
+        ma       = ma,
+        peers    = peers,
         mobs     = collectMobs(rt, mq, spellName, entry and entry.kind, coreApi.castTracker, now or os.clock()),
     }
 end
@@ -625,6 +710,8 @@ local failureSeen = { at = nil, spell = nil }
 local cache = { serial = nil, spell = nil, result = nil }
 local traced = { input = nil, pick = nil }
 local castsSeen = {}
+local tankPred = nil       -- the last prediction of the tank's next target
+local lastMaTarget = 0    -- the Main Assist's target at the last comparison
 local confirmed = {}      -- castKey -> cast time whose landing message was seen
 local pendingLanding = {} -- castKey -> { mobId, spell, at } waiting for a landing message
 local eventNames = {}
@@ -648,6 +735,27 @@ local function traceDecision(state, result)
     if pick ~= traced.pick then
         traced.pick = pick
         trace('%s: %s', tostring(state.spell), pick)
+        trace('xtarget: %s', describeXtarget(state.mobs))
+    end
+end
+
+-- Log what the tank's rule expected against what he took, each time his target changes.
+-- Trace only: nothing here feeds the pick.
+local function traceTankPrediction(state, now)
+    local ma = state.ma or {}
+    if ma.status == 'target' and (tonumber(ma.id) or 0) > 0 then
+        local actual = tonumber(ma.id)
+        if actual ~= lastMaTarget then
+            lastMaTarget = actual
+            if tankPred and now - tankPred.at <= PREDICTION_MAX_AGE_SEC then
+                local mode = ma.mode and ((ma.mode or '') .. ((ma.submode and ma.submode ~= '') and ('/' .. ma.submode) or '')) or nil
+                trace('%s', describePrediction(tankPred, actual, state.mobs, mode))
+            end
+            tankPred = nil
+        end
+        tankPred = makePrediction(state.mobs, actual, now)
+    elseif ma.status == 'none' then
+        tankPred = makePrediction(state.mobs, nil, now)
     end
 end
 
@@ -748,6 +856,7 @@ local function resolve(ctx)
     local state = collectState(core, spellName, ctx and ctx.entry, now)
     local result = decide(state)
     traceDecision(state, result)
+    traceTankPrediction(state, now)
     remember(result, spellName, now)
     cache = { serial = serial, spell = spellName, result = result }
     return result.id
@@ -782,6 +891,7 @@ function plugin.onDestroy()
     traced = { input = nil, pick = nil }
     castsSeen = {}
     confirmed, pendingLanding = {}, {}
+    tankPred, lastMaTarget = nil, 0
 end
 
 -- Each combat tick: notice a failed mez cast and drop the record of the mob it was aimed at.
@@ -852,6 +962,10 @@ plugin.logic = {
     mezStateOf   = mezStateOf,
     clearFailedMez = clearFailedMez,
     describeInput  = describeInput,
+    findMaPeer     = findMaPeer,
+    predictTankNext = predictTankNext,
+    describeXtarget = describeXtarget,
+    describePrediction = describePrediction,
     describeResult = describeResult,
     newMezCasts    = newMezCasts,
     landedTexts    = landedTexts,

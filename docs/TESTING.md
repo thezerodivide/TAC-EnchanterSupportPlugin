@@ -6,12 +6,12 @@
 luajit tests/run.lua
 ```
 
-- 351 checks without TAC; 365 with `TAC_SOURCE` pointing at a TAC `triune.lua` that has the registry (the extra 14 run this plugin against TAC's real registry code: register, resolve, disable, fail-closed, re-enable).
+- 367 checks without TAC; 381 with `TAC_SOURCE` pointing at a TAC `triune.lua` that has the registry (the extra 14 run this plugin against TAC's real registry code: register, resolve, disable, fail-closed, re-enable).
 - `tests/test_decision.lua`: the pure `decide()` function, the spell data, status text and the chat rate limit. Includes combinations (Main Assist target + a damaged add + an already-mezzed add, peers fighting the nearest add, every filter at once)
   and a purity check (`decide` does not change its input).
 - `tests/test_collection.lua`: the state collection against a fake game world (Main Assist outcomes, peers, the per-mob filters, settings, per-tick caching), the mez tracking, failed-cast handling, chat reporting, resilience (core reads that throw,
   a TAC without the registry, a refused registration) and the plugin's lifecycle.
-- `python tools/mutation_check.py` breaks 36 rules one at a time in a scratch copy and runs the suite; every one must fail. If you add a rule, add its test **and** a mutation.
+- `python tools/mutation_check.py` breaks 45 rules one at a time in a scratch copy and runs the suite; every one must fail. If you add a rule, add its test **and** a mutation.
 - `python tools/verify_spell_data.py` checks the `SPELLS` table against the game's `spells_us.txt` (class level, target type, level cap, cast time).
 
 CI (`.github/workflows/ci.yml`) runs the syntax check and `tests/run.lua` on Linux.
@@ -27,6 +27,8 @@ The plugin has **not** been run in game. To test:
 4. Pull a group of 2-4 mobs with the tank; ideally a case where the tank runs TAC (Box Network) and one where the tank is piloted.
 
 What to look for:
+
+- `mez: tank prediction` lines: `MATCH` or `MISS` for each change of the Main Assist's target, with his mode, both mobs (slot and HP%) and the Extended Target the prediction was made from. A low match rate means the tank's rule or this character's slot order differs from the assumption.
 
 - Turn on EverQuest's own chat log too (`/log on`): it shows whether the landing, awakened and worn-off messages appear, to compare with the `mez:` lines. Only Rapture's landing text has been seen so far.
 

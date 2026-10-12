@@ -58,6 +58,17 @@ MUTATIONS = [
     ('a confirmed cast is reported as unconfirmed', "if (confirmed or {})[key] ~= p.at and stillRecorded then", "if stillRecorded then"),
     ('a cleared record is reported as unconfirmed', "and stillRecorded then", "then"),
     ('the listeners are not removed on destroy', "for _, name in ipairs(eventNames) do pcall(mq.unevent, name) end", "local _ = 0"),
+
+    # tank prediction (trace only)
+    ('a tie on HP goes to the last slot, not the first', "if hp < lowest then lowest, best = hp, m end", "if hp <= lowest then lowest, best = hp, m end"),
+    ('slots are walked in reverse', "if sa ~= sb then return sa < sb end", "if sa ~= sb then return sa > sb end"),
+    ('the tank\'s current target is not excluded', "and m.id ~= excludeId then", "then"),
+    ('a miss is reported as a match', "(pred.id == actualId) and 'MATCH' or 'MISS'", "'MATCH'"),
+    ('an old prediction is still compared', "now - tankPred.at <= PREDICTION_MAX_AGE_SEC", "true"),
+    ('a feed flap is compared again', "if actual ~= lastMaTarget then", "if true then"),
+    ('the tank\'s name is compared case-sensitively', "tostring(p.name):lower() == tostring(maName):lower()", "tostring(p.name) == tostring(maName)"),
+    ('the tank\'s mode is not read', "if maPeer then ma.mode, ma.submode = maPeer.mode, maPeer.submode end", "local _ = 0"),
+    ('the slot is not recorded', "slot      = i,", ""),
     ('lockouts are not read', "lockedOut = lockedOut,", "lockedOut = false,"),
     ('range is not read', "inRange   = tlo(function() return rt.isTargetInRange(spellName, id) end, false) == true,", "inRange   = true,"),
 ]

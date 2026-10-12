@@ -11,6 +11,9 @@
 - **Mez messages.** The plugin listens for the game's own text: the landing text of each supported mez (from the spell file; Rapture's seen in a real log, the other eight not yet), "<mob> has been awakened by <who>."
   and "Your <spell> spell has worn off of <mob>.". An awakened or worn-off mez drops the record at once, so the mob can be mezzed again; a landing message only confirms the cast in the debug trace
   (and a cast with no landing message within 8 s is traced). Messages carry the mob's name, not its id, so they are matched to TAC's records by name and ignored when that is ambiguous. `tools/verify_spell_data.py` checks the landing texts.
+- **Tank prediction trace (trace only; the pick is unchanged).** The trace now lists the Extended Target (slot, id, name, HP%, distance) whenever the pick changes, names the Main Assist's mode and submode from his
+  heartbeat, and, each time his target changes, logs what TAC's "next target" rule (lowest HP%, first slot on a tie) expected against what he took (`MATCH` or `MISS`). The prediction ignores his ignore lists and distance cap and
+  uses this character's slot order; the point is to check those assumptions in game before any ranking is built on them.
 - Standalone test runner (`tests/run.lua`), a spell-data checker (`tools/verify_spell_data.py`) and a rule-mutation checker (`tools/mutation_check.py`).
 
 History: the plugin began as part of the `wip/mez-support` branch of `thezerodivide/TriuneAutocombat-4Class` (0.1.0 was the decision logic only; 0.2.0 added state collection, tracking, the selector and the settings panel).
